@@ -6,6 +6,21 @@ module ArubaLoader
   with_isolated_stderr do
     require 'aruba/api'
   end
+
+  # Each parallel worker (`rspec --parallel`, parallel_tests, ...) gets its own
+  # working directory: `setup_aruba` wipes it, which would pull the directory
+  # out from under the other workers' `cd`.
+  def self.working_directory
+    "tmp/aruba#{ENV['TEST_ENV_NUMBER']}"
+  end
+end
+
+RSpec.configure do |c|
+  # In a `before(:suite)` hook because `rspec --parallel` forks its workers,
+  # which set `TEST_ENV_NUMBER`, after the suite has loaded.
+  c.before(:suite) do
+    Aruba.configure { |config| config.working_directory = ArubaLoader.working_directory }
+  end
 end
 
 RSpec.shared_context "aruba support" do
@@ -14,6 +29,10 @@ RSpec.shared_context "aruba support" do
 
   let(:stderr) { StringIO.new }
   let(:stdout) { StringIO.new }
+
+  def aruba_working_directory
+    ArubaLoader.working_directory
+  end
 
   before { setup_aruba }
 
