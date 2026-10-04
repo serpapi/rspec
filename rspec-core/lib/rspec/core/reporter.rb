@@ -157,6 +157,14 @@ module RSpec::Core
     end
 
     # @private
+    # Records the duration of a top-level example group that ran in another
+    # process (see `Parallel`), in place of the time observed here.
+    def record_example_group_duration(group, duration)
+      ensure_listeners_ready
+      @profiler.record_group_duration(group, duration)
+    end
+
+    # @private
     # Provides a way to notify of an exception that is not tied to any
     # particular example (such as an exception encountered in a :suite hook).
     # Exceptions will be formatted the same way they normally are.

@@ -86,7 +86,10 @@ module RSpec
         setup(err, out)
         return @configuration.reporter.exit_early(exit_code) if RSpec.world.wants_to_quit
 
-        run_specs(@world.ordered_example_groups).tap do
+        example_groups = @world.ordered_example_groups
+        coordinator = Parallel.coordinator_for(self, example_groups)
+
+        (coordinator ? coordinator.run : run_specs(example_groups)).tap do
           persist_example_statuses
         end
       end

@@ -1,0 +1,171 @@
+module RSpec::Core::Parallel
+  RSpec.describe Worker do
+    let(:jobs) { Channel.pipe }
+    let(:results) { Channel.pipe }
+    let(:exits) { [] }
+    let(:stderr) { StringIO.new }
+    let(:groups) do
+      [
+        RSpec.describe("First") { it("passes") {} },
+        RSpec.describe("Second") do
+          it("fails") { raise "nope" }
+        end
+      ]
+    end
+
+    let(:traps) { {} }
+
+    def worker(number=2)
+      Worker.new(number, groups, jobs.first, results.last,
+                 :stderr => stderr,
+                 :exit => lambda { |status| exits << [:exit, status] },
+                 :exit_now => lambda { |status| exits << [:exit_now, status] },
+                 :trap => lambda { |signal, &handler| traps[signal] = handler })
+    end
+
+    def frames
+      results.first.drain.map(&:first)
+    end
+
+    after do
+      jobs.each(&:close)
+      results.each(&:close)
+    end
+
+    around { |example| without_env_vars("TEST_ENV_NUMBER", &example) }
+
+    describe "#test_env_number" do
+      it "follows the parallel_tests convention: blank for the first worker, then the worker number" do
+        expect(worker(1).test_env_number).to eq("")
+        expect(worker(2).test_env_number).to eq("2")
+        expect(worker(10).test_env_number).to eq("10")
+      end
+    end
+
+    describe "#prepare" do
+      it "identifies the worker, disables autorun and installs the forwarding reporter" do
+        worker(3).prepare
+
+        expect(ENV['TEST_ENV_NUMBER']).to eq("3")
+        expect(RSpec.configuration.parallel_worker_number).to eq(3)
+        expect(RSpec.configuration.reporter).to be_a(WorkerReporter)
+        expect(RSpec::Core::Runner).to be_autorun_disabled
+      end
+
+      it "handles interrupts like the runner does, but silently: stop between examples, force-quit the second time" do
+        worker.prepare
+
+        expect { traps.fetch('INT').call }.not_to output.to_stderr
+        expect(RSpec.world.wants_to_quit).to be true
+        expect(exits).to eq([])
+
+        traps.fetch('INT').call
+        expect(exits).to eq([[:exit_now, 1]])
+      end
+
+      it "drops the formatters inherited from the coordinating process" do
+        RSpec.configuration.formatter = "documentation"
+        expect(RSpec.configuration.formatters).not_to be_empty
+
+        worker.prepare
+
+        expect(RSpec.configuration.formatters).to be_empty
+      end
+    end
+
+    describe "#run" do
+      it "runs the dispatched groups inside the suite hooks, reports each unit and exits normally when told to stop" do
+        order = []
+        RSpec.configuration.before(:suite) { order << :before_suite }
+        RSpec.configuration.after(:suite) { order << :after_suite }
+        groups.first.before(:context) { order << :group }
+
+        jobs.last.send([:run, 0])
+        jobs.last.send([:run, 1])
+        jobs.last.send([:stop])
+
+        worker.run
+
+        expect(order).to eq([:before_suite, :group, :after_suite])
+        expect(exits).to eq([[:exit, 0]])
+
+        all = frames
+        expect(all.select { |f| f.first == :unit_finished }).to eq([
+          [:unit_finished, 0, true, false, false],
+          [:unit_finished, 1, false, false, false]
+        ])
+        expect(all.last).to eq([:exiting])
+        expect(all.map(&:first)).to include(:group_started, :example_started, :example_finished, :group_finished)
+      end
+
+      it "treats a quit request received while idle like stop" do
+        jobs.last.send([:quit])
+
+        worker.run
+
+        expect(exits).to eq([[:exit, 0]])
+        expect(frames).to eq([[:exiting]])
+      end
+
+      it "stops when the coordinator goes away" do
+        jobs.last.close
+
+        worker.run
+
+        expect(exits).to eq([[:exit, 0]])
+      end
+
+      it "reports a quitting world and non-example failures with the unit" do
+        RSpec.configuration.before(:suite) { raise "suite setup failed" }
+        jobs.last.send([:run, 0])
+        jobs.last.send([:stop])
+
+        worker.run
+
+        unit = frames.find { |f| f.first == :unit_finished }
+        expect(unit).to eq([:unit_finished, 0, false, true, true])
+      end
+
+      it "exits immediately without reporting when the results pipe is gone" do
+        results.first.close
+        jobs.last.send([:stop])
+
+        worker.run
+
+        expect(exits).to eq([[:exit_now, 1]])
+      end
+
+      it "arms the watchdog before the after(:suite) hooks run" do
+        armed_during_after_suite = nil
+        instance = worker
+        RSpec.configuration.after(:suite) { armed_during_after_suite = instance.instance_variable_get(:@watchdog_armed) }
+        allow(instance).to receive(:arm_watchdog) { instance.instance_variable_set(:@watchdog_armed, true) }
+        jobs.last.send([:stop])
+
+        instance.run
+
+        expect(armed_during_after_suite).to be true
+      end
+    end
+
+    describe "the watchdog" do
+      it "dumps every thread's backtrace to stderr and aborts the process once the timeout passes" do
+        RSpec.configuration.parallel_shutdown_timeout = 0.05
+        instance = worker(4)
+        blocked = Thread.new { sleep }
+
+        instance.arm_watchdog.join
+
+        expect(exits).to eq([[:exit_now, 1]])
+        expect(stderr.string).to include(
+          "RSpec parallel worker 4 (pid #{Process.pid}) did not exit within 0.05 seconds",
+          "(this watchdog)",
+          "Kernel#sleep"
+        )
+        expect(stderr.string.scan(/^  #<Thread:/).size).to be >= 3
+      ensure
+        blocked&.kill
+      end
+    end
+  end
+end

@@ -1,6 +1,19 @@
 ### Development
 [Full Changelog](https://github.com/rspec/rspec/compare/rspec-core-v3.13.6...main)
 
+Enhancements:
+
+* Add `--parallel[=COUNT]` (and `RSpec::Core::Configuration#parallel_workers`) to run
+  top-level example groups across worker processes forked after the suite has loaded.
+  Formatters run in the coordinating process only and receive one coherent stream of
+  notifications with real `Example` objects, so existing formatters work unchanged and the
+  run has one seed, one summary, one profile and one `.rspec_status` file. Workers run the
+  suite hooks once each, expose `RSpec::Core::Configuration#parallel_worker_number` and set
+  `TEST_ENV_NUMBER` the way parallel_tests does. A worker that finishes but does not exit is
+  aborted after `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of
+  its threads, so a stuck `at_exit` handler can no longer hang a run. Where `fork` is
+  unavailable the run is serial with a warning. (Illia Zub)
+
 # 4.0.0.beta1 / 2026-02-18
 
 Breaking Changes:

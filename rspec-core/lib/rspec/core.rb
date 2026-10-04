@@ -33,6 +33,7 @@ RSpec::Support.define_optimized_require_for_rspec(:core) { |f| require_relative 
   example
   shared_example_group
   example_group
+  parallel
 ].each { |name| RSpec::Support.require_rspec_core name }
 
 # Namespace for all core RSpec code.

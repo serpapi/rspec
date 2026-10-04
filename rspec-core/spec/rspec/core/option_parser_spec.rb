@@ -335,6 +335,26 @@ module RSpec::Core
       end
     end
 
+    describe "--parallel" do
+      it "requests one worker per processor without an argument" do
+        expect(Parser.parse(%w[ --parallel ])[:parallel_workers]).to eq(:auto)
+      end
+
+      it "requests the given number of workers" do
+        expect(Parser.parse(%w[ --parallel=4 ])[:parallel_workers]).to eq(4)
+      end
+
+      it "does not swallow a following path as its argument" do
+        options = Parser.parse(%w[ --parallel spec/models ])
+        expect(options[:parallel_workers]).to eq(:auto)
+        expect(options[:files_or_directories_to_run]).to eq(%w[ spec/models ])
+      end
+
+      it "rejects a non-numeric count" do
+        expect { Parser.parse(%w[ --parallel=lots ]) }.to raise_error(OptionParser::InvalidArgument)
+      end
+    end
+
     describe "--bisect" do
       it "sets the `:bisect` option" do
         options = Parser.parse(%w[ --bisect ])

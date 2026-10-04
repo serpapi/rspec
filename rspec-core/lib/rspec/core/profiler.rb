@@ -29,6 +29,15 @@ module RSpec
         group = notification.example.example_group.parent_groups.last
         @example_groups[group][:count] += 1
       end
+
+      # Used when the group ran in another process and its duration was
+      # measured there.
+      def record_group_duration(group, duration)
+        return unless group.top_level?
+
+        @example_groups[group][:description] = group.top_level_description
+        @example_groups[group][:total_time] = duration
+      end
     end
   end
 end

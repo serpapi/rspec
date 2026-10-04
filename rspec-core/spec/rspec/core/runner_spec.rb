@@ -363,6 +363,21 @@ module RSpec::Core
       end
 
       describe "#run" do
+        it 'hands the ordered example groups to a parallel coordinator when one applies, then persists example statuses' do
+          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+          RSpec.describe("group 2") { example("passing") { expect(1).to eq(1) } }
+          allow(config).to receive(:load_spec_files)
+          coordinator = instance_double(Parallel::Coordinator, :run => 17)
+          expect(Parallel).to receive(:coordinator_for).with(an_instance_of(Runner), world.ordered_example_groups).and_return(coordinator)
+          config.example_status_persistence_file_path = "statuses.txt"
+          expect(ExampleStatusPersister).to receive(:persist).with(world.all_examples, "statuses.txt")
+
+          runner = Runner.new(ConfigurationOptions.new([]), config, world)
+          expect(runner).not_to receive(:run_specs)
+
+          expect(runner.run(err, out)).to eq(17)
+        end
+
         it 'supports a test-queue like subclass that can perform setup once and run different sets of example groups multiple times' do
           order = []
 

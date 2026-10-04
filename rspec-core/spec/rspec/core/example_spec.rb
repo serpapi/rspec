@@ -972,4 +972,42 @@ RSpec.describe RSpec::Core::Example, :parent_metadata => 'sample' do
       expect(example.reporter).to be reporter
     end
   end
+
+  describe "#assign_execution_result" do
+    let(:example) { RSpec.describe("group").example("example", :pending => "declared") { } }
+
+    it "copies the result of running the example elsewhere onto the example" do
+      started_at = Time.now
+      finished_at = started_at + 1
+      error = RuntimeError.new("remote failure")
+
+      example.assign_execution_result(
+        :status => :failed, :started_at => started_at, :finished_at => finished_at, :run_time => 1.0,
+        :pending_message => nil, :pending_fixed => false, :exception => error, :pending_exception => nil,
+        :pending => nil, :skip => true, :extra_failure_lines => ["more"]
+      )
+
+      expect(example.execution_result).to have_attributes(
+        :status => :failed, :started_at => started_at, :finished_at => finished_at, :run_time => 1.0,
+        :pending_message => nil, :pending_fixed => false, :exception => error, :pending_exception => nil
+      )
+      expect(example.exception).to be(error)
+      expect(example.metadata).to include(:pending => "declared", :skip => true, :extra_failure_lines => ["more"])
+      expect(RSpec::Core::Notifications::ExampleNotification.for(example)).to be_a(RSpec::Core::Notifications::FailedExampleNotification)
+    end
+
+    it "marks pending results so that notifications are built like after a local run" do
+      pending_error = RuntimeError.new("still broken")
+
+      example.assign_execution_result(
+        :status => :pending, :pending_message => "declared", :pending_fixed => false,
+        :pending_exception => pending_error, :pending => true
+      )
+
+      expect(example.exception).to be_nil
+      expect(example.execution_result.pending_exception).to be(pending_error)
+      expect(RSpec::Core::Notifications::ExampleNotification.for(example)).to be_a(RSpec::Core::Notifications::FailedExampleNotification)
+      expect(example.execution_result).not_to be_example_skipped
+    end
+  end
 end

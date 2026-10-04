@@ -442,6 +442,27 @@ module RSpec
       end
 
       # @private
+      #
+      # Used by the parallel runner to copy onto this instance the result of
+      # running the same example in a worker process. Exceptions are the
+      # rebuilt stand-ins described in `Parallel::RemoteException`.
+      def assign_execution_result(attributes)
+        result = execution_result
+        result.status = attributes[:status]
+        result.started_at = attributes[:started_at]
+        result.finished_at = attributes[:finished_at]
+        result.run_time = attributes[:run_time]
+        result.pending_message = attributes[:pending_message]
+        result.pending_fixed = attributes[:pending_fixed]
+        result.pending_exception = attributes[:pending_exception]
+        result.exception = @exception = attributes[:exception]
+
+        [:pending, :skip, :extra_failure_lines].each do |key|
+          metadata[key] = attributes[key] unless attributes[key].nil?
+        end
+      end
+
+      # @private
       def instance_exec(*args, &block)
         @example_group_instance.instance_exec(*args, &block)
       end

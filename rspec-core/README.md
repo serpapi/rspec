@@ -275,6 +275,61 @@ which you'll use to run rspec. The `rspec` command comes with many useful
 options.
 Run `rspec --help` to see the complete list.
 
+## Running Examples in Parallel
+
+`rspec --parallel` runs the top-level example groups of your suite across
+worker processes, one per processor by default (`--parallel=4` for four).
+RSpec loads the suite once, forks the workers from the process that loaded it,
+hands out groups to whichever worker is free -- longest first when a previous
+run recorded timings in the `example_status_persistence_file_path` file -- and
+streams results back as examples finish. Your formatters run only in the
+coordinating process and see the notifications of a normal run, so there is
+one seed, one summary, one profile and one exit code, and `--fail-fast`,
+`--only-failures`, `--next-failure`, `--seed`, filters and `path:line`
+selection keep working. You can make it the default with:
+
+```ruby
+RSpec.configure do |config|
+  config.parallel_workers = :auto # or an Integer
+end
+```
+
+Each worker runs the `before(:suite)` and `after(:suite)` hooks once. Inside a
+worker, `RSpec.configuration.parallel_worker_number` is its 1-based number and
+`ENV['TEST_ENV_NUMBER']` follows the convention of parallel_tests (`""` for the
+first worker, then `"2"`, `"3"`, ...), so anything you already namespace per
+worker for that tool keeps working.
+
+Workers inherit everything that happened while the suite was loaded. For a
+Rails application that means `rails_helper` has already evaluated
+`database.yml` and connected to the database in the coordinating process
+before any worker exists: setting `TEST_ENV_NUMBER` afterwards does **not**
+give workers separate databases, so Rails suites run under `--parallel` share
+one test database until rspec-rails adds per-worker database support. Open
+connections, servers and similar resources acquired at load time are shared
+the same way; acquire them in `before(:suite)` to get one per worker.
+
+Formatters receive examples with their status, timing, pending details,
+exceptions (class name, message, backtrace, cause chain and aggregated
+failures; rebuilt as a subclass of the original class when that class exists
+in the coordinating process) and the group and example notifications in the
+order the worker produced them, plus `reporter.message`, deprecations and
+custom notifications whose options can be marshaled. Metadata that a worker
+mutates while running an example is not forwarded, and anything workers write
+to `$stdout`/`$stderr` directly is not sequenced with the formatter output.
+
+A worker that has finished its last example group but does not exit (a
+non-daemon thread, a browser that will not quit, ...) is given
+`config.parallel_shutdown_timeout` seconds (30 by default) to run its
+`after(:suite)` hooks and `at_exit` handlers; after that it dumps the
+backtraces of all its threads to stderr and is aborted, and the run exits
+with `config.error_exit_code`. The coordinator never waits unboundedly for a
+finished worker.
+
+`--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
+already set because another tool is running RSpec in parallel, RSpec prints a
+warning and runs serially. `--bisect` and `--dry-run` always run serially.
+
 ## Store Command Line Options `.rspec`
 
 You can store command line options in a `.rspec` file in the project's root

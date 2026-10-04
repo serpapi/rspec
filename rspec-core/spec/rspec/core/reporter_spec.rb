@@ -304,6 +304,24 @@ module RSpec::Core
       end
     end
 
+    describe "#record_example_group_duration" do
+      it "hands the duration to the profiler, setting it up if needed" do
+        slow, fast = RSpec.describe("slow"), RSpec.describe("fast")
+        config.profile_examples = 2
+        formatter = double("formatter")
+        reporter.register_listener(formatter, :dump_profile)
+
+        reporter.record_example_group_duration(slow, 4.0)
+        reporter.record_example_group_duration(fast, 1.0)
+
+        expect(formatter).to receive(:dump_profile) do |notification|
+          expect(notification.slowest_groups.map(&:last)).to include(a_hash_including(:total_time => 4.0), a_hash_including(:total_time => 1.0))
+        end
+        reporter.start(0)
+        reporter.finish
+      end
+    end
+
     describe "#notify_non_example_exception" do
       it "sends a `message` notification that contains the formatted exception details" do
         formatter_out = StringIO.new

@@ -232,6 +232,56 @@ module RSpec
       add_setting :fail_if_no_examples
 
       # @macro define_reader
+      # The number of worker processes to run top-level example groups across
+      # (default: `nil`, run everything in this process). `:auto` uses one
+      # worker per processor. Set from the command line with
+      # `--parallel[=COUNT]`.
+      #
+      # Workers are forked from this process once the suite has been loaded,
+      # so they inherit everything `spec_helper` and the spec files set up at
+      # load time -- including connections opened then. `before(:suite)` and
+      # `after(:suite)` hooks run once in each worker, where
+      # {#parallel_worker_number} and `ENV['TEST_ENV_NUMBER']` identify the
+      # worker. Formatters run in this process only and see the notifications
+      # of a normal run.
+      #
+      # Needs `fork`; where it is unavailable (Windows, JRuby) the run is
+      # serial and a warning is printed, as it is when `TEST_ENV_NUMBER` is
+      # already set because another tool is parallelizing the run.
+      #
+      # @return [Integer, :auto, nil]
+      define_reader :parallel_workers
+
+      # @see parallel_workers
+      def parallel_workers=(value)
+        if value.nil? || value == :auto || (value.is_a?(Integer) && value >= 1)
+          @parallel_workers = value
+        else
+          RSpec.warning "Cannot set `RSpec.configuration.parallel_workers` to `#{value.inspect}`; " \
+                        "it must be a positive integer, `:auto` or `nil`. Running serially."
+          @parallel_workers = nil
+        end
+      end
+
+      # @macro add_setting
+      # Seconds a parallel worker is given to exit once it has finished its
+      # last example group -- that is, to run its `after(:suite)` hooks and
+      # `at_exit` handlers (default: 30). A worker that takes longer dumps the
+      # backtraces of all its threads to stderr and is aborted, and the run
+      # exits with {#error_exit_code}.
+      # @return [Numeric]
+      add_setting :parallel_shutdown_timeout
+
+      # The 1-based number of the parallel worker this process is, or `nil`
+      # in the coordinating process and in serial runs. In workers,
+      # `ENV['TEST_ENV_NUMBER']` is also set, following the convention of
+      # parallel_tests: `""` for the first worker, then `"2"`, `"3"`, ... so
+      # that per-worker resource naming written for that tool keeps working.
+      # @return [Integer, nil]
+      # @note The writer is for the parallel runner's use.
+      attr_accessor :parallel_worker_number
+
+      # @macro define_reader
       # Indicates files configured to be required.
       # @return [Array<String>]
       define_reader :requires
@@ -458,6 +508,9 @@ module RSpec
         @failure_exit_code = 1
         @error_exit_code = nil # so it can be overridden by failure exit code
         @fail_if_no_examples = false
+        @parallel_workers = nil
+        @parallel_shutdown_timeout = 30
+        @parallel_worker_number = nil
         @spec_files_loaded = false
 
         @backtrace_formatter = BacktraceFormatter.new
@@ -526,6 +579,11 @@ module RSpec
         @formatter_loader = nil
         @output_wrapper = nil
       end
+
+      # @private
+      # Used by the parallel runner to install the reporter that forwards a
+      # worker's notifications to the coordinating process.
+      attr_writer :reporter
 
       # @private
       def reset_filters

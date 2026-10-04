@@ -1,0 +1,126 @@
+module RSpec
+  module Core
+    module Parallel
+      # Runs in a forked worker process: executes the example groups the
+      # coordinator dispatches over the jobs channel and streams results back
+      # over the results channel. Suite hooks run once per worker, around all
+      # the groups it executes.
+      #
+      # A worker that has finished its work but does not exit (a non-daemon
+      # thread in `at_exit`, a browser that will not quit, ...) is aborted by
+      # its own watchdog thread after `parallel_shutdown_timeout` seconds,
+      # with a dump of every thread's backtrace on stderr, because the process
+      # holding the stacks is the only one that can print them. The coordinator
+      # independently bounds the wait from its side.
+      # @private
+      class Worker
+        attr_reader :number
+
+        def initialize(number, example_groups, jobs, results, options={})
+          @number = number
+          @example_groups = example_groups
+          @jobs = jobs
+          @results = results
+          @configuration = options.fetch(:configuration) { RSpec.configuration }
+          @world = options.fetch(:world) { RSpec.world }
+          @stderr = options[:stderr]
+          @exit = options.fetch(:exit) { lambda { |status| exit(status) } }
+          @exit_now = options.fetch(:exit_now) { lambda { |status| exit!(status) } }
+          @trap = options.fetch(:trap) { lambda { |signal, &handler| trap(signal, &handler) } }
+        end
+
+        # @return [String] the `TEST_ENV_NUMBER` value for this worker, following
+        #   the convention established by parallel_tests: `""` for the first
+        #   worker, then `"2"`, `"3"`, ...
+        def test_env_number
+          @number == 1 ? "" : @number.to_s
+        end
+
+        # Never returns: ends the process when the coordinator has no more work.
+        def run
+          prepare
+          run_units
+          @exit.call(0)
+        rescue Errno::EPIPE, IOError
+          # The coordinator is gone; there is nobody left to report to.
+          @exit_now.call(1)
+        end
+
+        # @private
+        def prepare
+          Runner.disable_autorun!
+          trap_interrupt
+          ENV['TEST_ENV_NUMBER'] = test_env_number
+          @configuration.parallel_worker_number = @number
+          @configuration.reset_reporter
+          @reporter = WorkerReporter.new(@configuration, @results, @jobs, @world)
+          @configuration.reporter = @reporter
+        end
+
+        # Same contract as `Runner.handle_interrupt` -- stop between examples,
+        # force-quit on a second interrupt -- without the message, which the
+        # coordinator prints once for the run.
+        # @private
+        def trap_interrupt
+          world = @world
+          exit_now = @exit_now
+          @trap.call('INT') do
+            if world.wants_to_quit
+              exit_now.call(1)
+            else
+              world.wants_to_quit = true
+            end
+          end
+        end
+
+        # @private
+        def run_units
+          @configuration.with_suite_hooks do
+            while (message = @jobs.receive)
+              break unless message.first == :run
+
+              run_unit(message[1])
+            end
+
+            # Armed before `after(:suite)` hooks so that a hook that never
+            # returns is bounded too.
+            arm_watchdog
+          end
+
+          @results.send([:exiting])
+        end
+
+        # @private
+        def run_unit(index)
+          passed = @example_groups.fetch(index).run(@reporter)
+          @results.send([:unit_finished, index, passed ? true : false,
+                         !!@world.wants_to_quit, !!@world.non_example_failure])
+        end
+
+        # @private
+        def arm_watchdog
+          timeout = @configuration.parallel_shutdown_timeout
+          thread = Thread.new do
+            sleep timeout
+            dump_threads(timeout)
+            @exit_now.call(1)
+          end
+          thread.report_on_exception = false
+          thread
+        end
+
+        # @private
+        def dump_threads(timeout)
+          stderr = @stderr || $stderr
+          stderr.puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) did not exit within #{timeout} " \
+                      "seconds of finishing its last example group; aborting it. Threads at this point:"
+          Thread.list.each do |thread|
+            stderr.puts "  #{thread.inspect}#{' (this watchdog)' if thread.equal?(Thread.current)}"
+            Array(thread.backtrace).each { |line| stderr.puts "    #{line}" }
+          end
+          stderr.flush
+        end
+      end
+    end
+  end
+end
