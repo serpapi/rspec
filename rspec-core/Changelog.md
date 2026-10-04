@@ -6,8 +6,11 @@ Enhancements:
 * Add `--parallel[=COUNT]` (and `RSpec::Core::Configuration#parallel_workers`) to run
   top-level example groups across worker processes forked after the suite has loaded.
   Formatters run in the coordinating process only and receive one coherent stream of
-  notifications with real `Example` objects, so existing formatters work unchanged and the
-  run has one seed, one summary, one profile and one `.rspec_status` file. Workers run the
+  notifications with real `Example` objects -- results, timing, pending details, exceptions
+  rebuilt from their class name, message, backtrace and cause chain, messages, deprecations
+  and marshalable custom notifications (metadata mutated while an example runs is not
+  forwarded) -- so existing formatters keep working and the run has one seed, one summary,
+  one profile and one `.rspec_status` file. Workers run the
   suite hooks once each, expose `RSpec::Core::Configuration#parallel_worker_number` and set
   `TEST_ENV_NUMBER` the way parallel_tests does. A worker that finishes but does not exit is
   aborted after `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of

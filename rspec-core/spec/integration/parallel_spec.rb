@@ -338,6 +338,44 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     end
   end
 
+  describe 'a worker whose own world wants to quit (an interrupt delivered to that worker only)' do
+    def write_self_interrupting_group(name, examples_after=2)
+      write_file_formatted "spec/#{name.downcase}_spec.rb", "
+        RSpec.describe '#{name}' do
+          it('interrupts itself') { Process.kill('INT', Process.pid); sleep 0.2 }
+          #{examples_after}.times { |i| it(\"never runs \#{i}\") { } }
+        end
+      "
+    end
+
+    it 'retires that worker after the group it was running and lets the others finish, failing the run' do
+      write_self_interrupting_group('Interrupted')
+      write_file_formatted 'spec/other_spec.rb', "
+        RSpec.describe('Other') { 2.times { |i| it(\"passes \#{i}\") { sleep 0.05 } } }
+      "
+      write_file_formatted 'spec/third_spec.rb', "
+        RSpec.describe('Third') { it('passes') { } }
+      "
+
+      run_rspec "--order defined --parallel=2"
+
+      expect(last_cmd_exit_status).to eq(1)
+      expect(last_cmd_stdout).to match(/Parallel worker \d \(pid \d+\) stopped after Interrupted .* because `RSpec.world.wants_to_quit` was set/)
+      expect(last_cmd_stdout).to include("4 examples, 0 failures")
+      expect(last_cmd_stdout).not_to include("RSpec is shutting down")
+    end
+
+    it 'reports the groups nobody was left to run when every worker retires' do
+      %w[One Two Three Four].each { |name| write_self_interrupting_group(name, 0) }
+
+      run_rspec "--order defined --parallel=2"
+
+      expect(last_cmd_exit_status).to eq(1)
+      expect(last_cmd_stdout).to include("2 examples, 0 failures")
+      expect(last_cmd_stdout).to include("2 example groups did not run because no worker remained to run them")
+    end
+  end
+
   it 'reports a worker that dies and fails the run with the error exit code' do
     write_file_formatted 'spec/crash_spec.rb', "
       RSpec.describe 'Crashing' do

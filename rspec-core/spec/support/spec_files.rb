@@ -1,13 +1,21 @@
 RSpec.shared_context "spec files" do
+  # Written outside `spec/` so that the library-wide checks never glob them,
+  # and named per parallel worker so that one worker's `after(:all)` cannot
+  # delete the files another worker is loading.
+  def spec_file_path(basename)
+    File.expand_path("../../../tmp/#{basename}#{ENV['TEST_ENV_NUMBER']}.rb", __FILE__)
+  end
+
   def failing_spec_filename
-    @failing_spec_filename ||= File.expand_path(File.dirname(__FILE__)) + "/_failing_spec.rb"
+    @failing_spec_filename ||= spec_file_path("_failing_spec")
   end
 
   def passing_spec_filename
-    @passing_spec_filename ||= File.expand_path(File.dirname(__FILE__)) + "/_passing_spec.rb"
+    @passing_spec_filename ||= spec_file_path("_passing_spec")
   end
 
   def create_passing_spec_file
+    FileUtils.mkdir_p(File.dirname(passing_spec_filename))
     File.open(passing_spec_filename, 'w') do |f|
       f.write %q{
         RSpec.describe "passing spec" do
@@ -20,6 +28,7 @@ RSpec.shared_context "spec files" do
   end
 
   def create_failing_spec_file
+    FileUtils.mkdir_p(File.dirname(failing_spec_filename))
     File.open(failing_spec_filename, 'w') do |f|
       f.write %q{
         RSpec.describe "failing spec" do
