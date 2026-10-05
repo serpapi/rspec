@@ -349,8 +349,10 @@ count as errors outside of examples. Workers also exit on their own if the
 coordinating process disappears. SIGTERM or SIGHUP to the coordinating
 process, as `timeout` or a cancelled CI job sends, stops every worker -- even
 one that cannot tear down -- before the process ends the way a serial run
-would; a signal the run was started ignoring (`nohup`), or that your suite
-installs a handler for, is left alone.
+would, and the output says which example each worker was running and for how
+long, which is usually why the run had to be stopped; a signal the run was
+started ignoring (`nohup`), or that your suite installs a handler for, is left
+alone.
 
 `--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
 already set because another tool is running RSpec in parallel, RSpec prints a

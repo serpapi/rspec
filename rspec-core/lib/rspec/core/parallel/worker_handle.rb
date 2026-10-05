@@ -23,6 +23,16 @@ module RSpec
           @current_example_started_at = example && RSpec::Core::Time.now
         end
 
+        # @return [String, nil] the example this worker is in the middle of,
+        #   and for how long it has been running
+        def running_example_description
+          return nil unless @current_example
+
+          "#{description} was running #{@current_example.location_rerun_argument || @current_example.id} " \
+            "(#{@current_example.full_description}) for " \
+            "#{Parallel.seconds(RSpec::Core::Time.now - @current_example_started_at)}."
+        end
+
         # @return [Array(Example, Hash)] the example this worker was running
         #   when it was lost, and a result failing it with `text`
         def lost_example_result(text)
@@ -87,7 +97,11 @@ module RSpec
           [@pid, nil]
         end
 
-        def kill(process, signal_name)
+        # Sends `signal_name` as the `escalation` step that is followed up at
+        # `deadline`.
+        def signal(process, signal_name, escalation, deadline)
+          @escalation = escalation
+          @deadline = deadline
           process.kill(signal_name, @pid) if @pid
         rescue Errno::ESRCH, Errno::EPERM
           nil

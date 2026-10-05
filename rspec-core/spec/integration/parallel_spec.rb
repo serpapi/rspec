@@ -450,12 +450,16 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     expect(last_cmd_stdout).to include("1 example, 0 failures, 1 error occurred outside of examples")
   end
 
-  it 'stops its workers, even ones that cannot tear down, when it and its process group get SIGTERM' do
+  it 'stops its workers, even ones that cannot tear down, when it and its process group get SIGTERM, saying what they ran' do
     write_file_formatted 'spec/wedged_spec.rb', "
       RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
       2.times do |i|
         RSpec.describe(\"Wedged \#{i}\") do
-          it('keeps a thread that delays exit') { Thread.new { begin; sleep; ensure; sleep 60; end }; sleep 60 }
+          it('keeps a thread that delays exit') do
+            File.write(\"running_\#{i}\", '')
+            Thread.new { begin; sleep; ensure; sleep 60; end }
+            sleep 60
+          end
         end
       end
     "
@@ -470,7 +474,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', 'spec/wedged_spec.rb',
                           :out => 'stdout.txt', :err => File::NULL, :pgroup => true)
       deadline = deadline_for.call(20)
-      sleep 0.05 until worker_pids.size == 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      sleep 0.05 until (worker_pids.size == 2 && Dir['running_*'].size == 2) ||
+                       Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       workers = worker_pids
       expect(workers.size).to eq(2)
 
@@ -481,6 +486,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
       expect(status.termsig).to eq(Signal.list.fetch('TERM'))
       expect(File.read('stdout.txt')).to include("Received SIGTERM; stopping the workers.")
+      expect(File.read('stdout.txt').scan(%r{^Parallel worker [12] \(pid \d+\) was running \./spec/wedged_spec\.rb:\d+ \(Wedged [01] keeps a thread that delays exit\) for [\d.]+ seconds?\.$}).size).to eq(2)
       deadline = deadline_for.call(10)
       sleep 0.05 until workers.none?(&running) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       expect(workers.select(&running)).to eq([])

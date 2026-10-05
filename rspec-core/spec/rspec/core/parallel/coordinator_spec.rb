@@ -574,7 +574,7 @@ module RSpec::Core::Parallel
       expect(messages).to include("survived SIGKILL; giving up on it")
     end
 
-    it "stops the workers when it is sent SIGTERM, then goes the way a serial run would" do
+    it "stops the workers when it is sent SIGTERM, saying what they were running, then goes the way a serial run would" do
       handler = nil
       allow(RSpec::Core::Parallel).to receive(:trap_signals) do |signals, &block|
         expect(signals).to eq(%w[TERM HUP])
@@ -582,10 +582,17 @@ module RSpec::Core::Parallel
         { "TERM" => "DEFAULT" }
       end
       allow(RSpec::Core::Parallel).to receive(:restore_signals)
-      groups = [passing_group("A"), RSpec.describe("Stuck") { it("sleeps") { sleep } }]
+      stuck_started = Queue.new
+      stuck = RSpec.describe("Stuck") do
+        it("sleeps") do
+          stuck_started << true
+          sleep
+        end
+      end
+      groups = [passing_group("A"), stuck]
       config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
       signaller = Thread.new do
-        sleep 0.01 until handler && process.signals.empty? && messages.include?(".")
+        sleep 0.01 until handler && process.signals.empty? && messages.include?(".") && !stuck_started.empty?
         handler.call("TERM")
       end
 
@@ -594,7 +601,12 @@ module RSpec::Core::Parallel
       # The worker that ran A may not have been reaped yet, and gets one too.
       expect(process.signals.map(&:first).uniq).to eq(["TERM"])
       expect(messages).to include("Received SIGTERM; stopping the workers.")
-      expect(messages).to match(/^[12] examples?, 0 failures$/)
+      # Not defined in a loaded spec file, so it is named by its id rather than its line.
+      expect(messages).to match(
+        /^Parallel worker 2 \(pid \d+\) was running #{Regexp.escape(stuck.examples.first.id)} \(Stuck sleeps\) for [\d.]+ seconds?\.$/
+      )
+      expect(messages).to match(/^2 examples, 0 failures$/)
+      expect(stuck.examples.first.execution_result.status).to be_nil
       expect(RSpec::Core::Parallel).to have_received(:restore_signals).with("TERM" => "DEFAULT")
     end
 

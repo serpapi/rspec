@@ -93,7 +93,7 @@ module RSpec
           dispatch_work
 
           until @workers.all?(&:done?)
-            return report("Received SIG#{@termination_signal}; stopping the workers.") if @termination_signal
+            return stop_for_signal if @termination_signal
 
             wait_for_results
             reap_workers
@@ -102,6 +102,14 @@ module RSpec
             enforce_deadlines
             @sequencer.tick
           end
+        end
+
+        # A run stopped from outside -- a CI job's timeout, say -- most often
+        # was stuck in an example, so it says what each worker was running.
+        def stop_for_signal
+          @workers.each { |worker| receive_from(worker) unless worker.done? }
+          report "Received SIG#{@termination_signal}; stopping the workers."
+          @workers.each { |worker| (running = worker.running_example_description) && report(running) }
         end
 
         def wait_for_results
@@ -319,10 +327,10 @@ module RSpec
           when nil
             overdue(worker)
             worker.state = :terminating
-            signal(worker, 'TERM', :term, @term_grace)
+            worker.signal(@process, 'TERM', :term, now + @term_grace)
           when :term
             report "#{worker.description} is still alive #{Parallel.seconds(@term_grace)} after SIGTERM; sending SIGKILL."
-            signal(worker, 'KILL', :kill, @kill_grace)
+            worker.signal(@process, 'KILL', :kill, now + @kill_grace)
           when :kill
             report "#{worker.description} is still alive #{Parallel.seconds(@kill_grace)} after SIGKILL; giving up on it."
             abort_unit(worker)
@@ -346,7 +354,7 @@ module RSpec
         def terminate(worker, reason)
           lost(worker, reason, SENT_TERM)
           worker.state = :terminating
-          signal(worker, 'TERM', :term, @term_grace)
+          worker.signal(@process, 'TERM', :term, now + @term_grace)
         end
 
         # The worker can no longer be relied on. The example it was running,
@@ -377,12 +385,6 @@ module RSpec
                                                                :failure_lines => [text])
         end
 
-        def signal(worker, name, escalation, grace)
-          worker.escalation = escalation
-          worker.deadline = now + grace
-          worker.kill(@process, name)
-        end
-
         def abort_unit(worker)
           if (index = worker.current_unit)
             @unit_states[index] = :aborted
@@ -400,10 +402,10 @@ module RSpec
 
           live.each do |worker|
             worker.state = :terminating
-            signal(worker, 'TERM', :term, @term_grace)
+            worker.signal(@process, 'TERM', :term, now + @term_grace)
           end
           wait_for_exit(live, @term_grace)
-          live.reject(&:done?).each { |worker| signal(worker, 'KILL', :kill, @kill_grace) }
+          live.reject(&:done?).each { |worker| worker.signal(@process, 'KILL', :kill, now + @kill_grace) }
           wait_for_exit(live, @kill_grace)
 
           live.reject(&:done?).each do |worker|

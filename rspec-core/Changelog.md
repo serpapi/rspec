@@ -17,7 +17,8 @@ Enhancements:
   parallel_tests does. A worker that finishes but does not exit is aborted after
   `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its threads,
   so a stuck `at_exit` handler can no longer hang a run, and a worker that crashes fails the
-  example it was running instead of taking the run down. Where `fork` is unavailable the run
+  example it was running instead of taking the run down. A run stopped with SIGTERM or SIGHUP
+  says which example each worker was running and for how long. Where `fork` is unavailable the run
   is serial with a warning. `--bisect` runs serially, and the reproduction command it prints
   now ends with `--no-parallel`. (Illia Zub)
 
