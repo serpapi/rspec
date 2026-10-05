@@ -571,20 +571,6 @@ module RSpec::Core::Parallel
         expect(messages).not_to include("survived SIGKILL")
         expect(RSpec::Core::Parallel.monotonic_time - started).to be < 4
       end
-
-      it "starts this process's `Kernel.rand` sequence over from its seed, the one the workers load the spec files with" do
-        previous = Kernel.srand(1234)
-        first = Kernel.rand(1_000_000)
-        Kernel.rand(1_000_000)
-        worker_behaviours[1] = worker_behaviours[2] = :never_loads
-
-        instance = started_coordinator([passing_group("A")])
-
-        expect(Kernel.rand(1_000_000)).to eq(first)
-        instance.dismiss
-      ensure
-        Kernel.srand(previous)
-      end
     end
 
     it "terminates a worker that sends data it cannot decode" do

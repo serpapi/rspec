@@ -758,31 +758,39 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       expect(last_cmd_stderr).to include("`config.parallel_workers` was set while the spec files were loading", "Running serially.")
     end
 
-    it 'draws the same values with Kernel.rand while loading as a serial run with the same seed' do
-      write_file_formatted 'spec/spec_helper.rb', "RSpec.configure { |c| Kernel.srand(c.seed) }"
+    it 'leaves Kernel.rand alone in the coordinating process, never calling srand' do
+      write_marking_spec_files
+      previous = Kernel.srand(1234)
+
+      run_rspec '--parallel=2 --no-parallel-preload'
+
+      expect(last_cmd_stdout).to include("3 examples, 0 failures")
+      expect(Kernel.rand(2**62)).to eq(Random.new(1234).rand(2**62))
+    ensure
+      Kernel.srand(previous)
+    end
+
+    it 'has every worker draw from a seed of its own, as forked processes do' do
       %w[a b].each do |name|
         write_file_formatted "spec/#{name}_spec.rb", "
           RSpec.describe('#{name.upcase}') do
-            3.times do
-              n = rand(1000)
-              it(\"handles \#{n}\") do
-                File.write(\"ran_\#{RSpec.configuration.parallel_worker_number.inspect}\", '')
-                expect(n).to be_even
-              end
+            it('draws once every worker runs an example') do
+              number = RSpec.configuration.parallel_worker_number
+              File.write(\"running_\#{number}\", '')
+              deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+              sleep 0.05 until Dir['running_*'].size == 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+              File.write(\"drew_\#{number}\", rand(2**62).to_s)
             end
           end
         "
       end
 
-      _, serial, = rspec_process('--seed', '1234', '--require', './spec/spec_helper')
-      status, parallel, errors = rspec_process('--seed', '1234', '--require', './spec/spec_helper', '--parallel=2',
-                                               '--no-parallel-preload')
+      run_rspec '--parallel=2 --no-parallel-preload'
 
-      expect(errors).to eq("")
-      expect(cd('.') { Dir['ran_*'] - ['ran_nil'] }).not_to be_empty
-      expect(serial.lines.grep(/^rspec /)).not_to be_empty
-      expect(parallel.lines.grep(/^rspec |examples, /)).to match_array(serial.lines.grep(/^rspec |examples, /))
-      expect(status.exitstatus).to eq(1)
+      expect(last_cmd_stdout).to include("2 examples, 0 failures")
+      drawn = cd('.') { Dir['drew_*'].map { |file| File.read(file) } }
+      expect(drawn.size).to eq(2)
+      expect(drawn.uniq.size).to eq(2)
     end
 
     it 'reports the groups and examples as the worker that ran them described them' do

@@ -44,7 +44,6 @@ module RSpec
           @termination_signal = nil
           @signal_handlers = {}
           @started_at = nil
-          @load_seed = nil
         end
 
         # The groups to run. Workers forked before loading that are more than

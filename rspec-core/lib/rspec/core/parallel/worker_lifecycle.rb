@@ -11,13 +11,9 @@ module RSpec
       # @private
       module WorkerLifecycle
         # Forks the workers before the spec files are loaded; each loads them
-        # itself and reports what it loaded. Ruby reseeds `Kernel.rand` in a
-        # forked process, so every process starts loading from this one's
-        # seed, and values drawn while loading are the same in all of them.
+        # itself and reports what it loaded.
         def start
           @started_at = now
-          @load_seed = Kernel.srand
-          Kernel.srand(@load_seed)
           start_workers(nil)
         end
 
@@ -45,7 +41,7 @@ module RSpec
         end
 
         def fork_worker(worker, workers)
-          worker.fork_worker(@process, @units, workers, :signal_handlers => @signal_handlers, :load_seed => @load_seed)
+          worker.fork_worker(@process, @units, workers, :signal_handlers => @signal_handlers)
         end
 
         # Including those a failed `fork` left without a process.

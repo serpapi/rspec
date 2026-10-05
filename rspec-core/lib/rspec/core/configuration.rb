@@ -278,15 +278,14 @@ module RSpec
       # (`--no-parallel-preload`) the workers -- no more than there are spec
       # files, but two for one -- are forked as soon as the `--require`d
       # files are loaded, and each loads the spec files itself -- once
-      # `ENV['TEST_ENV_NUMBER']` is set, from this process's `Kernel.rand`
-      # seed -- as this process does for its reporting. Nothing the spec
-      # files do while loading (connections, threads, system libraries they
-      # initialize) is then shared with the workers, at the cost of loading
-      # them once per worker. A worker that does not load the same examples
-      # as this process is not used. It, and {#parallel_workers}, have to be
-      # set before the spec files load (on the command line, in `.rspec` or
-      # in a `--require`d file); set while they load, they come too late, and
-      # the run is serial, with a warning.
+      # `ENV['TEST_ENV_NUMBER']` is set -- as this process does for its
+      # reporting. Nothing the spec files do while loading (connections,
+      # threads, system libraries they initialize) is then shared with the
+      # workers, at the cost of loading them once per worker. A worker that
+      # does not load the same examples as this process is not used. It, and
+      # {#parallel_workers}, have to be set before the spec files load (on
+      # the command line, in `.rspec` or in a `--require`d file); set while
+      # they load, they come too late, and the run is serial, with a warning.
       # @return [Boolean]
       add_setting :parallel_preload
 
