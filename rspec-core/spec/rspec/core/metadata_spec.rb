@@ -633,6 +633,20 @@ module RSpec
         end
       end
 
+      describe ":absolute_file_path" do
+        it "is the path of the file that defined the group, not its relative path expanded in another directory" do
+          dir = File.join(Dir.tmpdir, "loaded_from_here")
+          allow(Metadata).to receive(:relative_path_regex).and_return(%r{(\A|\s)#{Regexp.escape(dir)}(/|\s|\Z)})
+
+          group = instance_eval <<-EOS, File.join(dir, "defined_here_spec.rb"), 1
+            RSpec.describe("group") { }
+          EOS
+
+          expect(group.metadata).to include(:file_path => "./defined_here_spec.rb",
+                                            :absolute_file_path => File.join(dir, "defined_here_spec.rb"))
+        end
+      end
+
       describe ":line_number" do
         def value_for(*args)
           value = nil

@@ -27,6 +27,9 @@ Enhancements:
   is serial with a warning. `--bisect` runs serially, and the reproduction command it
   prints now ends with `--no-parallel`.
   (Illia Zub)
+* Load and filter large suites faster by no longer looking up the working directory once per
+  example and example group, which took seconds on a suite of 150,000 examples, and more when
+  several processes did it at once. (Illia Zub)
 
 # 4.0.0.beta1 / 2026-02-18
 

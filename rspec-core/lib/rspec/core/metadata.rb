@@ -143,7 +143,10 @@ module RSpec
                                    end
 
           relative_file_path            = Metadata.relative_path(file_path)
-          absolute_file_path            = File.expand_path(relative_file_path)
+          # The path as given rather than the relative one: spec files are
+          # loaded by their absolute path, which expands without asking the
+          # OS for the working directory, once per example and group.
+          absolute_file_path            = File.expand_path(file_path)
           metadata[:file_path]          = relative_file_path
           metadata[:line_number]        = line_number.to_i
           metadata[:location]           = "#{relative_file_path}:#{line_number}"
