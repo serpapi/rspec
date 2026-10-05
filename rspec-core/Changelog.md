@@ -18,7 +18,8 @@ Enhancements:
   `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its threads,
   so a stuck `at_exit` handler can no longer hang a run, and a worker that crashes fails the
   example it was running instead of taking the run down. Where `fork` is unavailable the run
-  is serial with a warning. (Illia Zub)
+  is serial with a warning. `--bisect` runs serially, and the reproduction command it prints
+  now ends with `--no-parallel`. (Illia Zub)
 
 # 4.0.0.beta1 / 2026-02-18
 

@@ -127,9 +127,10 @@ module RSpec
         streams.each { |stream| stream.flush if stream.respond_to?(:flush) }
       end
 
-      # Handlers that end the process: Ruby's and the system's defaults, and
-      # `nil` -- one installed outside Ruby, which `trap` cannot reinstate.
-      ENDS_PROCESS = ['DEFAULT', 'SYSTEM_DEFAULT', nil].freeze
+      # Handlers that end the process: Ruby's and the system's defaults. Any
+      # other (`IGNORE`, `nil` -- also an ignored signal --, `EXIT`, a proc)
+      # stays in force.
+      ENDS_PROCESS = %w[DEFAULT SYSTEM_DEFAULT].freeze
 
       # Installs `handler` for each signal the platform has that would end the
       # process. Ignored signals (as under `nohup`) and handlers the suite
@@ -151,7 +152,7 @@ module RSpec
 
       # @private
       def self.restore_signals(handlers)
-        handlers.each { |signal, previous| trap(signal, previous || 'DEFAULT') }
+        handlers.each { |signal, previous| trap(signal, previous) }
       end
 
       # @return the value when `Marshal` can serialize it, otherwise what the

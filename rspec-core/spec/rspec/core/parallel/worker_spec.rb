@@ -108,7 +108,7 @@ module RSpec::Core::Parallel
       end
 
       it "reinstates the handlers the coordinating process replaced with its own, and only those" do
-        worker(2, :signal_handlers => { "TERM" => "SYSTEM_DEFAULT", "HUP" => nil }).prepare
+        worker(2, :signal_handlers => { "TERM" => "SYSTEM_DEFAULT", "HUP" => "DEFAULT" }).prepare
 
         expect(traps).to include("TERM" => "SYSTEM_DEFAULT", "HUP" => "DEFAULT")
 

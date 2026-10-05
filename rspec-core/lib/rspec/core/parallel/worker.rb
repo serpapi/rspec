@@ -82,7 +82,7 @@ module RSpec
           trap_interrupt
           # Inherited from the coordinator: its handlers, which a worker swaps
           # back for the ones they replaced.
-          @signal_handlers.each { |signal, previous| @trap.call(signal, previous || 'DEFAULT') }
+          @signal_handlers.each { |signal, previous| @trap.call(signal, previous) }
           ENV['TEST_ENV_NUMBER'] = test_env_number
           @configuration.parallel_worker_number = @number
           @configuration.reset_reporter

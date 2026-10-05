@@ -89,6 +89,10 @@ module RSpec::Core::Parallel
           send_unknown_ids(results) if behaviour == :unknown_ids
           run_fake_worker(handle.number, jobs, results, behaviour) { |status| exit_status = status }
         end
+      ensure
+        # Like the end of a process: its pipes close, and it is gone a moment later.
+        [jobs, results].each(&:close)
+        sleep 0.2 if behaviour == :slow_exit
       end
 
       @process.register(thread) { exit_status && FakeProcess::Status.new(exit_status, nil) }
@@ -154,6 +158,16 @@ module RSpec::Core::Parallel
       expect(process.signals).to be_empty
       expect(process.warmups).to eq(1)
       expect(groups.flat_map(&:examples).map { |e| e.execution_result.status }).to all(eq(:passed))
+    end
+
+    it "reaps workers as soon as they are gone rather than a tick after their results pipe closed" do
+      worker_behaviours[1] = worker_behaviours[2] = :slow_exit
+      started = RSpec::Core::Parallel.monotonic_time
+
+      exit_code = coordinator([passing_group("A"), passing_group("B")], 2, :tick => 5).run
+
+      expect(exit_code).to eq(0)
+      expect(RSpec::Core::Parallel.monotonic_time - started).to be < 2
     end
 
     it "returns the failure exit code when an example fails" do

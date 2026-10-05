@@ -178,17 +178,20 @@ module RSpec::Core
         trap("HUP", "IGNORE")
 
         expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
-        expect(trap("HUP", suite_handler)).to eq("IGNORE")
+        expect(trap("HUP", nil)).to eq("IGNORE")
+
+        expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
+        expect(trap("HUP", suite_handler)).to be_nil
 
         expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
         expect(trap("HUP", "DEFAULT")).to equal(suite_handler)
       end
 
-      it "reinstates the replaced handlers, using Ruby's default for one installed outside Ruby" do
+      it "reinstates the handlers it replaced" do
         Parallel.restore_signals("HUP" => "SYSTEM_DEFAULT")
         expect(trap("HUP", "IGNORE")).to eq("SYSTEM_DEFAULT")
 
-        Parallel.restore_signals("HUP" => nil)
+        Parallel.restore_signals("HUP" => "DEFAULT")
         expect(trap("HUP", "IGNORE")).to eq("DEFAULT")
       end
     end

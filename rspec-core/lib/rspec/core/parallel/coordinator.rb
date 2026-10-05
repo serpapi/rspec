@@ -108,7 +108,10 @@ module RSpec
           readers = @workers.reject { |worker| worker.done? || worker.results.eof? || worker.results.closed? }
 
           if readers.empty?
-            sleep @tick
+            # Each worker left is exiting (its results pipe is at its end) or
+            # was given up on: all there is to do is reap it or enforce its
+            # deadline, and an exiting worker is reapable within moments.
+            sleep [@tick, 0.01].min
             return
           end
 

@@ -356,8 +356,8 @@ installs a handler for, is left alone.
 already set because another tool is running RSpec in parallel, RSpec prints a
 warning and runs serially. `--bisect` and `--dry-run` always run serially, and
 the reproduction command `--bisect` prints includes `--no-parallel`, which (like
-`--parallel=0`) also overrides a `--parallel` stored in `.rspec`, and leaves
-`--parallel` out of its `SPEC_OPTS`.
+`--parallel=0`) overrides `--parallel` in `.rspec` and `config.parallel_workers`
+in a helper, and leaves `--parallel` out of its `SPEC_OPTS`.
 
 ## Store Command Line Options `.rspec`
 

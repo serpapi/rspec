@@ -52,7 +52,7 @@ Feature: Bisect
     When I run `rspec --seed 1234 --bisect`
     Then bisect should succeed with output like:
       """
-      Bisect started using options: "--seed 1234"
+      Bisect started using options: "--seed 1234 --no-parallel"
       Running suite to find failures... (0.16755 seconds)
       Starting bisect with 1 failing example and 9 non-failing examples.
       Checking that failure(s) are order-dependent... failure appears to be order-dependent
@@ -64,7 +64,7 @@ Feature: Bisect
       Bisect complete! Reduced necessary non-failing examples from 9 to 1 in 1.26 seconds.
 
       The minimal reproduction command is:
-        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234
+        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234 --no-parallel
       """
     When I run `rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234`
     Then the output should contain "2 examples, 1 failure"
@@ -73,7 +73,7 @@ Feature: Bisect
     When I run `rspec --seed 1234 --bisect` and abort in the middle with ctrl-c
     Then bisect should fail with output like:
       """
-      Bisect started using options: "--seed 1234"
+      Bisect started using options: "--seed 1234 --no-parallel"
       Running suite to find failures... (0.17102 seconds)
       Starting bisect with 1 failing example and 9 non-failing examples.
       Checking that failure(s) are order-dependent... failure appears to be order-dependent
@@ -85,7 +85,7 @@ Feature: Bisect
       Bisect aborted!
 
       The most minimal reproduction command discovered so far is:
-        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234
+        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234 --no-parallel
       """
     When I run `rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234`
     Then the output should contain "3 examples, 1 failure"
@@ -94,7 +94,7 @@ Feature: Bisect
     When I run `rspec --seed 1234 --bisect=verbose`
     Then bisect should succeed with output like:
       """
-      Bisect started using options: "--seed 1234" and bisect runner: :fork
+      Bisect started using options: "--seed 1234 --no-parallel" and bisect runner: :fork
       Running suite to find failures... (0.16528 seconds)
        - Failing examples (1):
           - ./spec/calculator_1_spec.rb[1:1]
@@ -109,11 +109,11 @@ Feature: Bisect
           - ./spec/calculator_8_spec.rb[1:1]
           - ./spec/calculator_9_spec.rb[1:1]
       Checking that failure(s) are order-dependent..
-       - Running: rspec ./spec/calculator_1_spec.rb[1:1] --seed 1234 (n.nnnn seconds)
+       - Running: rspec ./spec/calculator_1_spec.rb[1:1] --seed 1234 --no-parallel (n.nnnn seconds)
        - Failure appears to be order-dependent
       Round 1: bisecting over non-failing examples 1-9
-       - Running: rspec ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_6_spec.rb[1:1] ./spec/calculator_7_spec.rb[1:1] ./spec/calculator_8_spec.rb[1:1] ./spec/calculator_9_spec.rb[1:1] --seed 1234 (0.15302 seconds)
-       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_2_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] ./spec/calculator_4_spec.rb[1:1] ./spec/calculator_5_spec.rb[1:1] --seed 1234 (0.19708 seconds)
+       - Running: rspec ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_6_spec.rb[1:1] ./spec/calculator_7_spec.rb[1:1] ./spec/calculator_8_spec.rb[1:1] ./spec/calculator_9_spec.rb[1:1] --seed 1234 --no-parallel (0.15302 seconds)
+       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_2_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] ./spec/calculator_4_spec.rb[1:1] ./spec/calculator_5_spec.rb[1:1] --seed 1234 --no-parallel (0.19708 seconds)
        - Examples we can safely ignore (4):
           - ./spec/calculator_6_spec.rb[1:1]
           - ./spec/calculator_7_spec.rb[1:1]
@@ -126,8 +126,8 @@ Feature: Bisect
           - ./spec/calculator_4_spec.rb[1:1]
           - ./spec/calculator_5_spec.rb[1:1]
       Round 2: bisecting over non-failing examples 1-5
-       - Running: rspec ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_4_spec.rb[1:1] ./spec/calculator_5_spec.rb[1:1] --seed 1234 (0.15836 seconds)
-       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_2_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234 (0.19065 seconds)
+       - Running: rspec ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_4_spec.rb[1:1] ./spec/calculator_5_spec.rb[1:1] --seed 1234 --no-parallel (0.15836 seconds)
+       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_2_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234 --no-parallel (0.19065 seconds)
        - Examples we can safely ignore (2):
           - ./spec/calculator_4_spec.rb[1:1]
           - ./spec/calculator_5_spec.rb[1:1]
@@ -136,15 +136,15 @@ Feature: Bisect
           - ./spec/calculator_2_spec.rb[1:1]
           - ./spec/calculator_3_spec.rb[1:1]
       Round 3: bisecting over non-failing examples 1-3
-       - Running: rspec ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_2_spec.rb[1:1] --seed 1234 (0.21028 seconds)
-       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234 (0.1975 seconds)
+       - Running: rspec ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_2_spec.rb[1:1] --seed 1234 --no-parallel (0.21028 seconds)
+       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] ./spec/calculator_3_spec.rb[1:1] --seed 1234 --no-parallel (0.1975 seconds)
        - Examples we can safely ignore (1):
           - ./spec/calculator_2_spec.rb[1:1]
        - Remaining non-failing examples (2):
           - ./spec/calculator_10_spec.rb[1:1]
           - ./spec/calculator_3_spec.rb[1:1]
       Round 4: bisecting over non-failing examples 1-2
-       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234 (0.17173 seconds)
+       - Running: rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234 --no-parallel (0.17173 seconds)
        - Examples we can safely ignore (1):
           - ./spec/calculator_3_spec.rb[1:1]
        - Remaining non-failing examples (1):
@@ -152,7 +152,7 @@ Feature: Bisect
       Bisect complete! Reduced necessary non-failing examples from 9 to 1 in 1.47 seconds.
 
       The minimal reproduction command is:
-        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234
+        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234 --no-parallel
       """
     When I run `rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234`
     Then the output should contain "2 examples, 1 failure"
@@ -171,8 +171,8 @@ Feature: Bisect
     When I run `rspec --seed 1234 --bisect=verbose`
     Then bisect should succeed with output like:
       """
-      Bisect started using options: "--seed 1234" and bisect runner: :shell
+      Bisect started using options: "--seed 1234 --no-parallel" and bisect runner: :shell
       # ...
       The minimal reproduction command is:
-        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234
+        rspec ./spec/calculator_10_spec.rb[1:1] ./spec/calculator_1_spec.rb[1:1] --seed 1234 --no-parallel
       """
