@@ -5,19 +5,32 @@ module RSpec
       # workers report them under.
       # @private
       class SuiteIndex
-        def initialize(world)
+        # @param on_unknown [Proc] called once for each id the suite does not have
+        def initialize(world, &on_unknown)
           @world = world
+          @on_unknown = on_unknown
+          @unknown_ids = []
         end
 
-        def example(id)
-          examples_by_id[id]
+        def with_example(id, &block)
+          with_known(examples_by_id[id], id, &block)
         end
 
-        def group(id)
-          groups_by_id[id]
+        def with_group(id, &block)
+          with_known(groups_by_id[id], id, &block)
         end
 
       private
+
+        # Examples and groups defined while running (rather than loading) the
+        # suite exist only in the worker that defined them.
+        def with_known(target, id)
+          return yield(target) if target
+          return if @unknown_ids.include?(id)
+
+          @unknown_ids << id
+          @on_unknown.call(id)
+        end
 
         def examples_by_id
           @examples_by_id ||= @world.all_examples.each_with_object({}) { |example, hash| hash[example.id] = example }

@@ -1,17 +1,21 @@
 module RSpec
   module Core
     module Parallel
-      # The reporter installed in a worker process. Instead of notifying
-      # formatters it forwards every notification -- RSpec's own and custom
-      # ones published through `Reporter#publish` -- to the coordinator as
+      # The reporter installed in a worker process. It has no formatters;
+      # it forwards every notification -- RSpec's own and custom ones
+      # published through `Reporter#publish` -- to the coordinator as
       # `Marshal`-safe frames referring to examples and groups by id. The
       # coordinator replays them onto its own reporter, so formatters run
       # exclusively in the coordinating process and receive real `Example`
       # and `ExampleGroup` objects.
+      #
+      # Listeners registered on this reporter from inside the worker (for
+      # instance in a `before(:suite)` hook) are notified as usual before the
+      # notification is forwarded.
       # @private
       class WorkerReporter < Reporter
         FORWARDED_AS_PAYLOAD = [:message, :deprecation].freeze
-        DERIVED_BY_COORDINATOR = [:example_passed, :example_failed, :example_pending].freeze
+        EXAMPLE_OUTCOMES = [:example_passed, :example_failed, :example_pending].freeze
         RUN_LIFECYCLE = [:seed, :start, :stop, :start_dump, :dump_pending, :dump_failures, :deprecation_summary,
                          :dump_profile, :dump_summary, :close].freeze
 
@@ -33,13 +37,19 @@ module RSpec
         end
 
         # @private
+        # An example's result is forwarded with its outcome notification
+        # (`example_passed`, `example_failed` or `example_pending`), which
+        # follows `example_finished`, so that metadata worker listeners add
+        # on either (such as `:extra_failure_lines`) reaches the coordinator.
         def notify(event, notification)
+          super
+
           case event
           when :example_group_started  then forward_group_started(notification.group)
           when :example_group_finished then forward_group_finished(notification.group)
           when :example_started        then @results.send([:example_started, notification.example.id])
-          when :example_finished       then forward_example_finished(notification.example)
-          when *DERIVED_BY_COORDINATOR, *RUN_LIFECYCLE then nil
+          when *EXAMPLE_OUTCOMES       then forward_example_finished(notification.example)
+          when :example_finished, *RUN_LIFECYCLE then nil
           when *FORWARDED_AS_PAYLOAD   then forward(event, notification)
           else forward_custom(event, notification)
           end

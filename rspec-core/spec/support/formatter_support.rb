@@ -272,7 +272,8 @@ module RSpec::Core
   class Reporter
     module EnforceRSpecNotificationsListComplete
       def notify(event, *args)
-        return super if caller_locations(1, 1).first.label =~ /publish/
+        # Two frames, so that reporters overriding `notify` and calling `super` are covered too.
+        return super if caller_locations(1, 2).any? { |location| location.label =~ /publish/ }
         return super if RSPEC_NOTIFICATIONS.include?(event)
 
         raise "#{event.inspect} must be added to `RSPEC_NOTIFICATIONS`"

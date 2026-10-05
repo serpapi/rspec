@@ -123,7 +123,8 @@ module RSpec::Core::Parallel
       expect(rebuilt.message).to eq("A Needs::Arguments for which `exception.message.to_s` raises NoMethodError.")
     end
 
-    it "ships the detailed message so that SyntaxError formatting matches", :if => SyntaxError.method_defined?(:detailed_message) do
+    it "ships the detailed message so that SyntaxError formatting matches",
+       :skip => !Exception.method_defined?(:detailed_message) && "needs Exception#detailed_message (Ruby 3.2+)" do
       original = begin
         eval("}", binding, __FILE__, __LINE__)
       rescue SyntaxError => e
@@ -154,6 +155,40 @@ module RSpec::Core::Parallel
 
       expect(copy.backtrace).to eq(%w[a])
       expect(rebuilt.backtrace).to eq(%w[a b c])
+    end
+
+    it "uses the backtrace it was sent even when the original class computes its own from state it lacks" do
+      # Like `Minitest::UnexpectedError`, which rspec-rails specs can raise.
+      wrapping = Class.new(StandardError) do
+        attr_accessor :error
+
+        def initialize(error)
+          super("Unexpected exception")
+          self.error = error
+        end
+
+        def backtrace
+          error.backtrace
+        end
+
+        def set_backtrace(backtrace) # rubocop:disable Naming/AccessorMethodName
+          error.set_backtrace(backtrace)
+        end
+      end
+      stub_const("WrappingError", wrapping)
+      inner = RuntimeError.new("inner")
+      inner.set_backtrace(["./spec/inner_spec.rb:3"])
+
+      rebuilt = round_trip(WrappingError.new(inner))
+      copy = rebuilt.dup
+      copy.set_backtrace(["./spec/other_spec.rb:1"])
+
+      expect(rebuilt).to be_a(WrappingError)
+      expect(rebuilt.backtrace).to eq(["./spec/inner_spec.rb:3"])
+      expect(rebuilt.backtrace_locations).to be_nil
+      expect(copy.backtrace).to eq(["./spec/other_spec.rb:1"])
+      presented = RSpec::Core::Formatters::ExceptionPresenter.new(rebuilt, new_example).fully_formatted(1)
+      expect(presented).to include("Unexpected exception", "./spec/inner_spec.rb:3")
     end
 
     context "with an exception that aggregates several failures" do

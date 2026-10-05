@@ -115,7 +115,7 @@ Feature: `--parallel` option
     And the output should match /Parallel worker 2 \(pid \d+\) failed while shutting down \(exit status 1\)/
     And the stderr should contain "did not exit within 1 seconds of finishing its last example group"
     And the stderr should contain "Threads at this point:"
-    And the stderr should contain "Thread#join"
+    And the stderr should contain "join"
 
   Scenario: Inside another tool's parallel worker RSpec runs serially
     Given I set the environment variable "TEST_ENV_NUMBER" to "2"

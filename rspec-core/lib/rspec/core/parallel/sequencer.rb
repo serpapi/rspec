@@ -17,8 +17,9 @@ module RSpec
       # Liveness is bounded in both modes: when the live group has been silent
       # for {SILENCE_BOUND} seconds, when a finished group has been waiting
       # for {WAIT_BOUND} seconds behind a live group that keeps producing
-      # output, or when more than {QUEUE_BOUND} notifications are queued,
-      # waiting notifications are delivered right away. Formatters then see
+      # output, or when more than {QUEUE_BOUND} notifications or
+      # {QUEUE_BYTES_BOUND} bytes of them are queued, waiting notifications
+      # are delivered right away. Formatters then see
       # the live group closed and re-opened around them (its headings
       # repeat), which is the price of showing results promptly.
       #
@@ -29,6 +30,7 @@ module RSpec
         SILENCE_BOUND = 2.0
         WAIT_BOUND = 10.0
         QUEUE_BOUND = 5_000
+        QUEUE_BYTES_BOUND = 8 * 1024 * 1024
         CONTEXT_FREE = [:message, :deprecation, :custom].freeze
 
         Event = Struct.new(:kind, :target, :payload, :bytes)
@@ -128,7 +130,7 @@ module RSpec
         def tick(now=@clock.call)
           return unless @sequenced
 
-          if @stats[:queued] >= QUEUE_BOUND
+          if @stats[:queued] >= QUEUE_BOUND || @stats[:queued_bytes] >= QUEUE_BYTES_BOUND
             flush_everything
           elsif @completed.any? && (now - @last_delivery_at >= SILENCE_BOUND || now - @completed.first.completed_at >= WAIT_BOUND)
             flush_completed

@@ -18,6 +18,12 @@ module RSpec
     module Parallel
       DURATION = /(?:(\d+) minutes? )?([\d.]+) seconds?/
 
+      # Raised -- as the failure of the example a worker was running, or as
+      # an error outside of examples -- when a parallel worker is lost:
+      # it crashed, was killed, or had to be terminated because it did not
+      # stop or exit in time.
+      class WorkerError < StandardError; end
+
       # @return [Coordinator, nil] a coordinator for the groups, or `nil` when
       #   the run should proceed serially (not requested, not possible or not
       #   worth it). Warns when a requested parallel run is not possible.
@@ -108,6 +114,31 @@ module RSpec
       # @private
       def self.monotonic_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # Whatever the formatters wrote before `start` (seed, run options) may
+      # still be buffered in streams that are not `$stdout`; forked workers
+      # would write it again when they exit.
+      # @private
+      def self.flush_output(configuration)
+        streams = configuration.formatters.map { |formatter| formatter.output if formatter.respond_to?(:output) }
+        streams.push(configuration.output_stream, configuration.error_stream, configuration.deprecation_stream)
+        streams.push($stdout, $stderr)
+        streams.each { |stream| stream.flush if stream.respond_to?(:flush) }
+      end
+
+      # Installs `handler` for each signal the platform has.
+      # @return [Hash{String => Object}] the handlers it replaced
+      # @private
+      def self.trap_signals(signals, &handler)
+        signals.select { |signal| Signal.list.key?(signal) }.to_h do |signal|
+          [signal, trap(signal) { handler.call(signal) }]
+        end
+      end
+
+      # @private
+      def self.restore_signals(handlers)
+        handlers.each { |signal, previous| trap(signal, previous || 'DEFAULT') }
       end
 
       # @return the value when `Marshal` can serialize it, otherwise what the

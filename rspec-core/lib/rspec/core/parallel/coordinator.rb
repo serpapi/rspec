@@ -16,6 +16,10 @@ module RSpec
         # worker's own watchdog fires first and the thread dump comes from
         # the process that owns the threads.
         WATCHDOG_GRACE = 1.0
+        SENT_TERM = ', so it was sent SIGTERM'
+        # Handled by stopping the workers -- in time, even ones that cannot
+        # tear down -- before the coordinator goes the way a serial run would.
+        TERMINATION_SIGNALS = %w[TERM HUP].freeze
 
         def initialize(runner, example_groups, units, worker_count, options={})
           @runner = runner
@@ -35,12 +39,13 @@ module RSpec
           @unit_states = Array.new(@units.size, :pending)
           @results = Results.new
           @quitting = false
-          @unknown_ids = []
+          @termination_signal = nil
         end
 
         # @return [Integer] the exit code for the run
         def run
           reporter = @configuration.reporter
+          handlers = Parallel.trap_signals(TERMINATION_SIGNALS) { |signal| @termination_signal ||= signal }
 
           passed = reporter.report(@world.example_count(@example_groups)) do
             @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
@@ -55,21 +60,21 @@ module RSpec
               report_unrun_units
             end
 
-            passed?
+            @unit_states.all? { |state| state == :passed }
           end
 
-          @runner.exit_code(passed)
-        end
+          # Terminated like a serial run would have been, once the workers are gone.
+          raise SignalException, @termination_signal if @termination_signal
 
-        # @private
-        def passed?
-          @unit_states.all? { |state| state == :passed }
+          @runner.exit_code(passed)
+        ensure
+          Parallel.restore_signals(handlers) if handlers
         end
 
       private
 
         def start_workers
-          flush_output
+          Parallel.flush_output(@configuration)
           @process.warmup if @process.respond_to?(:warmup)
           @worker_count.times { |index| @workers << WorkerHandle.new(index + 1) }
 
@@ -79,30 +84,16 @@ module RSpec
           end
         end
 
-        # Whatever the formatters wrote before `start` (seed, run options) is
-        # still buffered in streams that are not `$stdout`; forked workers
-        # would write it again when they exit.
-        def flush_output
-          streams = @configuration.formatters.map { |formatter| formatter.output if formatter.respond_to?(:output) }
-          streams.push(@configuration.output_stream, @configuration.error_stream, @configuration.deprecation_stream)
-          streams.push($stdout, $stderr)
-          streams.each { |stream| stream.flush if stream.respond_to?(:flush) }
-        end
-
         def fork_worker(worker, workers)
-          @process.fork do
-            # :nocov: - runs in the forked worker process, covered by integration specs
-            workers.each { |other| other.close_all unless other.equal?(worker) }
-            worker.close_parent_ends
-            Worker.new(worker.number, @units, worker.child_jobs, worker.child_results).run
-            # :nocov:
-          end
+          worker.fork_worker(@process, @units, workers)
         end
 
         def event_loop
           dispatch_work
 
           until @workers.all?(&:done?)
+            return report("Received SIG#{@termination_signal}; stopping the workers.") if @termination_signal
+
             wait_for_results
             reap_workers
             request_quit if @world.wants_to_quit && !@quitting
@@ -147,14 +138,15 @@ module RSpec
 
         def handle_message(worker, message, bytes)
           kind, *rest = message
+          number = worker.number
           case kind
-          when :group_started    then with_group(rest[0]) { |g| @sequencer.group_started(worker.number, g, bytes) }
-          when :group_finished   then with_group(rest[0]) { |g| @sequencer.group_finished(worker.number, g, rest[1], bytes) }
-          when :example_started  then with_example(rest[0]) { |e| @sequencer.example_started(worker.number, e, bytes) }
+          when :group_started    then index.with_group(rest[0]) { |g| @sequencer.group_started(number, g, bytes) }
+          when :group_finished   then index.with_group(rest[0]) { |g| @sequencer.group_finished(number, g, rest[1], bytes) }
+          when :example_started  then index.with_example(rest[0]) { |e| example_started(worker, e, bytes) }
           when :example_finished then example_finished(worker, rest[0], rest[1], bytes)
-          when :message          then @sequencer.message(worker.number, rest[0], bytes)
-          when :deprecation      then @sequencer.deprecation(worker.number, rest[0], bytes)
-          when :custom           then @sequencer.custom(worker.number, rest[0], rest[1], bytes)
+          when :message          then @sequencer.message(number, rest[0], bytes)
+          when :deprecation      then @sequencer.deprecation(number, rest[0], bytes)
+          when :custom           then @sequencer.custom(number, rest[0], rest[1], bytes)
           else handle_control_message(worker, kind, rest)
           end
         end
@@ -172,34 +164,24 @@ module RSpec
           @configuration.reporter.notify_non_example_exception(RemoteException.rebuild(payload), context_description)
         end
 
+        def example_started(worker, example, bytes)
+          worker.current_example = example
+          @sequencer.example_started(worker.number, example, bytes)
+        end
+
         def example_finished(worker, example_id, payload, bytes)
-          with_example(example_id) do |example|
+          index.with_example(example_id) do |example|
+            worker.current_example = nil
             record_result(example, payload)
             @sequencer.example_finished(worker.number, example, bytes)
           end
         end
 
-        def with_example(id, &block)
-          with_known(index.example(id), id, &block)
-        end
-
-        def with_group(id, &block)
-          with_known(index.group(id), id, &block)
-        end
-
         def index
-          @index ||= SuiteIndex.new(@world)
-        end
-
-        # Examples and groups defined while running (rather than loading) the
-        # suite exist only in the worker that defined them.
-        def with_known(target, id)
-          return yield(target) if target
-          return if @unknown_ids.include?(id)
-
-          @unknown_ids << id
-          report "A parallel worker reported results for #{id}, which was not defined when the suite was loaded; " \
-                 "examples and groups defined at run time cannot be reported by `--parallel`."
+          @index ||= SuiteIndex.new(@world) do |id|
+            report "A parallel worker reported results for #{id}, which was not defined when the suite was loaded; " \
+                   "examples and groups defined at run time cannot be reported by `--parallel`."
+          end
         end
 
         # Recorded as soon as it arrives: failure counting and `.rspec_status`
@@ -284,12 +266,13 @@ module RSpec
 
         # Control messages are a few bytes; a worker that is not reading them is
         # dead or wedged: reaping or the deadline set here deals with it, and
-        # `judge_exit` still sees the state it was in.
+        # `judge_exit` still sees the state it was in. A worker that is merely
+        # exiting gets the usual grace period to do so.
         def write(worker, message)
           worker.jobs.send(message)
           true
         rescue Errno::EPIPE, IOError
-          worker.deadline ||= now
+          worker.deadline ||= now + @configuration.parallel_shutdown_timeout + @watchdog_grace
           false
         end
 
@@ -310,17 +293,12 @@ module RSpec
         def judge_exit(worker, status)
           case worker.state
           when :running
-            where = worker.current_unit ? "while running #{unit_description(worker.current_unit)}" : "between example groups"
-            report "#{worker.description} exited unexpectedly (#{WorkerHandle.describe_status(status)}) #{where}; " \
-                   "the examples it had not finished did not run."
-            @world.non_example_failure = true
-            abort_unit(worker)
+            lost(worker, "exited unexpectedly (#{WorkerHandle.describe_status(status)})")
           when :stopping
             return if status&.success?
 
-            report "#{worker.description} failed while shutting down (#{WorkerHandle.describe_status(status)}). " \
-                   "If its exit watchdog fired, its thread dump is on stderr above."
-            @world.non_example_failure = true
+            error("#{worker.description} failed while shutting down (#{WorkerHandle.describe_status(status)}). " \
+                  "If its exit watchdog fired, its thread dump is on stderr above.")
           end
         end
 
@@ -335,10 +313,7 @@ module RSpec
         def escalate(worker)
           case worker.escalation
           when nil
-            report "#{worker.description} #{overdue_description(worker)}; sending SIGTERM. Raise " \
-                   "`config.parallel_shutdown_timeout` if it legitimately needs longer."
-            @world.non_example_failure = true
-            abort_unit(worker)
+            overdue(worker)
             worker.state = :terminating
             signal(worker, 'TERM', :term, @term_grace)
           when :term
@@ -351,24 +326,49 @@ module RSpec
           end
         end
 
-        def overdue_description(worker)
+        def overdue(worker)
           timeout = Parallel.seconds(@configuration.parallel_shutdown_timeout)
           if worker.state == :stopping
-            "did not exit within #{timeout} of finishing its last example group (its `after(:suite)` hooks or " \
-              "`at_exit` handlers may be stuck)"
+            error("#{worker.description} did not exit within #{timeout} of finishing its last example group (its " \
+                  "`after(:suite)` hooks or `at_exit` handlers may be stuck), so it was sent SIGTERM. Raise " \
+                  "`config.parallel_shutdown_timeout` if it legitimately needs longer.")
           elsif worker.quit_sent
-            "did not stop within #{timeout} of being asked to stop early (fail-fast or interrupt)"
+            lost(worker, "did not stop within #{timeout} of being asked to stop early (fail-fast or interrupt)", SENT_TERM)
           else
-            "stopped reporting #{timeout} ago"
+            lost(worker, "stopped reporting for #{timeout}", SENT_TERM)
           end
         end
 
         def terminate(worker, reason)
-          report "#{worker.description} #{reason}; sending SIGTERM."
-          @world.non_example_failure = true
-          abort_unit(worker)
+          lost(worker, reason, SENT_TERM)
           worker.state = :terminating
           signal(worker, 'TERM', :term, @term_grace)
+        end
+
+        # The worker can no longer be relied on. The example it was running,
+        # if any, fails with the reason -- so the summary, `Failed examples:`
+        # and `.rspec_status` point at it -- and otherwise the reason is
+        # reported as an error outside of examples.
+        def lost(worker, what, consequence='')
+          unit = worker.current_unit && unit_description(worker.current_unit)
+          if worker.current_example
+            example, result = worker.lost_example_result(
+              "#{worker.description} #{what} while running this example#{consequence}" \
+              "#{"; the rest of #{unit} did not run" if unit}."
+            )
+            record_result(example, result)
+            @sequencer.example_finished(worker.number, example, 0)
+          else
+            where = unit ? "while running #{unit}, outside of any example" : 'between example groups'
+            error("#{worker.description} #{what} #{where}#{consequence}.")
+          end
+          abort_unit(worker)
+        end
+
+        # Counted as an error outside of examples, like a failing suite hook.
+        def error(text)
+          @configuration.reporter.notify_non_example_exception(WorkerError.new(text), 'An error occurred in a parallel worker.',
+                                                               :failure_lines => [text])
         end
 
         def signal(worker, name, escalation, grace)

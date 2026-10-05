@@ -127,6 +127,10 @@ module RSpec
         # Instance methods of every rebuilt exception.
         # @private
         module Remote
+          BACKTRACE = ::Exception.instance_method(:backtrace)
+          BACKTRACE_LOCATIONS = ::Exception.instance_method(:backtrace_locations)
+          SET_BACKTRACE = ::Exception.instance_method(:set_backtrace)
+
           def message
             remote_payload[:message]
           end
@@ -145,6 +149,22 @@ module RSpec
 
           def cause
             @cause ||= RemoteException.rebuild(remote_payload[:cause])
+          end
+
+          # The original class may keep its backtrace in state the rebuilt
+          # instance does not have (`Minitest::UnexpectedError` delegates to
+          # the error it wraps), so use the one set from the payload -- or by
+          # `set_backtrace` later on.
+          def backtrace
+            BACKTRACE.bind_call(self)
+          end
+
+          def set_backtrace(backtrace) # rubocop:disable Naming/AccessorMethodName
+            SET_BACKTRACE.bind_call(self, backtrace)
+          end
+
+          def backtrace_locations
+            BACKTRACE_LOCATIONS.bind_call(self)
           end
 
         private

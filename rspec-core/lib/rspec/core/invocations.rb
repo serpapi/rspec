@@ -34,13 +34,21 @@ module RSpec
           )
 
           success = RSpec::Core::Bisect::Coordinator.bisect_with(
-            runner, options.args, formatter
+            runner, cli_args_for(options, runner.configuration), formatter
           )
 
           runner.exit_code(success)
         end
 
       private
+
+        # Bisection runs the suite serially; the reproduction command it
+        # prints has to as well, whatever enabled parallel runs.
+        def cli_args_for(options, configuration)
+          return options.args unless configuration.parallel_workers
+
+          options.args.reject { |arg| arg =~ /\A--(?:no-)?parallel(?:=|\z)/ } + ['--no-parallel']
+        end
 
         def bisect_formatter_klass_for(argument)
           return Formatters::BisectDebugFormatter if argument == "verbose"

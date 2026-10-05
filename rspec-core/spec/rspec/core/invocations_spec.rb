@@ -93,6 +93,20 @@ module RSpec::Core
         )
       end
 
+      context "when parallel runs are configured" do
+        let(:original_cli_args) { %w[--bisect --parallel=3 --seed 1234] }
+
+        it "makes the reproduction command run serially" do
+          run_invocation
+
+          expect(RSpec::Core::Bisect::Coordinator).to have_received(:bisect_with).with(
+            an_instance_of(Runner),
+            %w[--bisect --seed 1234 --no-parallel],
+            an_instance_of(Formatters::BisectProgressFormatter)
+          )
+        end
+      end
+
       context "when the bisection is successful" do
         it "returns 0" do
           exit_code = run_invocation

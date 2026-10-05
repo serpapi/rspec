@@ -4,7 +4,7 @@ module RSpec
       # Coordinator-side bookkeeping for one worker process.
       # @private
       class WorkerHandle
-        attr_reader :number, :jobs, :results, :child_jobs, :child_results
+        attr_reader :number, :jobs, :results, :child_jobs, :child_results, :current_example, :current_example_started_at
         attr_accessor :pid, :current_unit, :state, :deadline, :escalation, :exit_status, :quit_sent, :exiting
 
         def initialize(number)
@@ -14,6 +14,38 @@ module RSpec
           @state = :running
           @quit_sent = false
           @exiting = false
+          @pid = @current_unit = @deadline = @escalation = @exit_status = nil
+          @current_example = @current_example_started_at = nil
+        end
+
+        def current_example=(example)
+          @current_example = example
+          @current_example_started_at = example && RSpec::Core::Time.now
+        end
+
+        # @return [Array(Example, Hash)] the example this worker was running
+        #   when it was lost, and a result failing it with `text`
+        def lost_example_result(text)
+          example = @current_example
+          exception = WorkerError.new(text)
+          exception.set_backtrace([example.location])
+          finished_at = RSpec::Core::Time.now
+          result = { :status => :failed, :started_at => @current_example_started_at, :finished_at => finished_at,
+                     :run_time => finished_at - @current_example_started_at,
+                     :exception => RemoteException.payload_for(exception) }
+          self.current_example = nil
+          [example, result]
+        end
+
+        # @return [Integer] the pid of the worker process forked to run `units`
+        def fork_worker(process, units, handles)
+          process.fork do
+            # :nocov: - runs in the forked worker process, covered by integration specs
+            handles.each { |other| other.close_all unless other.equal?(self) }
+            close_parent_ends
+            Worker.new(@number, units, @child_jobs, @child_results).run
+            # :nocov:
+          end
         end
 
         def close_parent_ends

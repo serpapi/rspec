@@ -3,19 +3,22 @@
 
 Enhancements:
 
-* Add `--parallel[=COUNT]` (and `RSpec::Core::Configuration#parallel_workers`) to run
+* Add `--[no-]parallel[=COUNT]` (and `RSpec::Core::Configuration#parallel_workers`) to run
   top-level example groups across worker processes forked after the suite has loaded.
   Formatters run in the coordinating process only and receive one coherent stream of
   notifications with real `Example` objects -- results, timing, pending details, exceptions
   rebuilt from their class name, message, backtrace and cause chain, messages, deprecations
-  and marshalable custom notifications (metadata mutated while an example runs is not
-  forwarded) -- so existing formatters keep working and the run has one seed, one summary,
-  one profile and one `.rspec_status` file. Workers run the
-  suite hooks once each, expose `RSpec::Core::Configuration#parallel_worker_number` and set
-  `TEST_ENV_NUMBER` the way parallel_tests does. A worker that finishes but does not exit is
-  aborted after `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of
-  its threads, so a stuck `at_exit` handler can no longer hang a run. Where `fork` is
-  unavailable the run is serial with a warning. (Illia Zub)
+  and marshalable custom notifications (of the metadata changed while an example runs only
+  `:extra_failure_lines`, `:pending` and `:skip` are forwarded) -- so existing formatters
+  keep working and the run has one seed, one summary, one profile and one `.rspec_status`
+  file. Listeners registered inside a worker, e.g. in a `before(:suite)` hook, still see
+  that worker's example notifications. Workers run the suite hooks once each, expose
+  `RSpec::Core::Configuration#parallel_worker_number` and set `TEST_ENV_NUMBER` the way
+  parallel_tests does. A worker that finishes but does not exit is aborted after
+  `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its threads,
+  so a stuck `at_exit` handler can no longer hang a run, and a worker that crashes fails the
+  example it was running instead of taking the run down. Where `fork` is unavailable the run
+  is serial with a warning. (Illia Zub)
 
 # 4.0.0.beta1 / 2026-02-18
 

@@ -149,6 +149,36 @@ module RSpec::Core::Parallel
       expect(frames.map(&:first)).not_to include(:example_passed)
     end
 
+    it "notifies listeners registered inside the worker, such as from a `before(:suite)` hook" do
+      events = []
+      notifications = [:example_group_started, :example_started, :example_finished, :example_failed, :message, :my_event]
+      listener = Object.new
+      notifications.each do |event|
+        listener.define_singleton_method(event) { |_notification| events << event }
+      end
+      reporter.register_listener(listener, *notifications)
+
+      RSpec.describe("G") { it("fails") { raise "x" } }.run(reporter)
+      reporter.message("hi")
+      reporter.publish(:my_event)
+
+      expect(events).to eq(notifications)
+      expect(frames.map(&:first)).to eq([:group_started, :example_started, :example_finished, :group_finished, :message, :custom])
+    end
+
+    it "forwards metadata that a worker listener adds when notified of the example's outcome" do
+      listener = Object.new
+      def listener.example_failed(notification)
+        notification.example.metadata[:extra_failure_lines] = ["Ref: added in the worker"]
+      end
+      reporter.register_listener(listener, :example_failed)
+
+      RSpec.describe("G") { it("fails") { raise "x" } }.run(reporter)
+
+      payload = frames.find { |f| f.first == :example_finished }.last
+      expect(payload[:extra_failure_lines]).to eq(["Ref: added in the worker"])
+    end
+
     it "sets the world's `wants_to_quit` when the coordinator asks it to quit between examples" do
       jobs.last.send([:quit])
       group = RSpec.describe("G") do

@@ -350,8 +350,18 @@ module RSpec::Core
         expect(options[:files_or_directories_to_run]).to eq(%w[ spec/models ])
       end
 
-      it "rejects a non-numeric count" do
-        expect { Parser.parse(%w[ --parallel=lots ]) }.to raise_error(OptionParser::InvalidArgument)
+      it "runs serially with a count of 0, like --no-parallel, overriding an earlier --parallel" do
+        expect(Parser.parse(%w[ --parallel=0 ])).to include(:parallel_workers => nil)
+        expect(Parser.parse(%w[ --parallel=4 --no-parallel ])).to include(:parallel_workers => nil)
+      end
+
+      %w[ lots 2.5 -1 ].push("").each do |count|
+        it "aborts with a usage message for the count #{count.inspect}" do
+          parser = Parser.new(["--parallel=#{count}"])
+          message = "Expected a non-negative integer for `--parallel`, got: #{count.inspect}"
+          expect(parser).to receive(:abort).with(a_string_including(message, 'use --help'))
+          parser.parse
+        end
       end
     end
 

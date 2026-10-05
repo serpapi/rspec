@@ -107,6 +107,29 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     expect(ENV['TEST_ENV_NUMBER']).to eq(test_env_number_before)
   end
 
+  it 'notifies listeners registered in a before(:suite) hook and shows the failure lines they add, like a serial run' do
+    write_file_formatted 'spec/listener_spec.rb', "
+      class RefListener
+        def example_failed(notification)
+          notification.example.metadata[:extra_failure_lines] = ['Ref: added by a before(:suite) listener']
+        end
+      end
+      RSpec.configure do |c|
+        c.before(:suite) { RSpec.configuration.reporter.register_listener(RefListener.new, :example_failed) }
+      end
+      RSpec.describe('One') { it('fails') { expect(1).to eq(2) } }
+      RSpec.describe('Two') { it('fails too') { expect(2).to eq(3) } }
+    "
+
+    run_rspec "--order defined spec/listener_spec.rb"
+    serial_stdout = last_cmd_stdout
+    run_rspec "--parallel=2 --order defined spec/listener_spec.rb"
+
+    expect(last_cmd_exit_status).to eq(1)
+    expect(serial_stdout.scan('Ref: added by a before(:suite) listener').size).to eq(2)
+    expect(last_cmd_stdout.scan('Ref: added by a before(:suite) listener').size).to eq(2)
+  end
+
   describe 'formatter parity with a serial run' do
     before { write_fixed_suite }
 
@@ -250,8 +273,9 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       "> Two (feature)",
       "  ok nil",
       "< Two",
-      "custom: {from: \"worker\"}",
-      "message: Parallel worker 1 could not forward the custom `my_event` notification because its options cannot be marshaled: {payload: #<Proc"
+      "custom: #{{ :from => 'worker' }.inspect}",
+      "message: Parallel worker 1 could not forward the custom `my_event` notification because its options cannot be " \
+      "marshaled: #{{ :payload => 0 }.inspect.chomp('0}')}#<Proc"
     )
     expect(last_cmd_exit_status).to eq(1)
   end
@@ -376,8 +400,9 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     end
   end
 
-  it 'reports a worker that dies and fails the run with the error exit code' do
+  it 'fails the example a worker dies in, with the reason, so it can be rerun' do
     write_file_formatted 'spec/crash_spec.rb', "
+      RSpec.configure { |c| c.example_status_persistence_file_path = 'status.txt' }
       RSpec.describe 'Crashing' do
         it('finishes') { }
         it('dies') { exit!(7) }
@@ -388,9 +413,99 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
     run_rspec "--order defined --parallel=2 --error-exit-code 3 spec/crash_spec.rb"
 
+    expect(last_cmd_exit_status).to eq(1)
+    expect(last_cmd_stdout).to match(
+      /Failure\/Error: it\('dies'\) \{ exit!\(7\) \}\n\s+Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running this example; the rest of Crashing \(\.\/spec\/crash_spec\.rb:2\) did not run\./
+    )
+    expect(last_cmd_stdout).to include("3 examples, 1 failure", "rspec ./spec/crash_spec.rb:4 # Crashing dies")
+    cd('.') { expect(File.read('status.txt')).to match(%r{^\./spec/crash_spec\.rb\[1:2\] \| failed }) }
+  end
+
+  it 'counts a worker that dies outside of any example as an error and fails the run with the error exit code' do
+    write_file_formatted 'spec/crash_spec.rb', "
+      RSpec.describe 'Crashing' do
+        before(:context) { exit!(7) }
+        it('never runs') { }
+      end
+      RSpec.describe('Fine') { it('passes') { } }
+    "
+
+    run_rspec "--order defined --parallel=2 --error-exit-code 3 spec/crash_spec.rb"
+
     expect(last_cmd_exit_status).to eq(3)
-    expect(last_cmd_stdout).to match(/Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running Crashing/)
-    expect(last_cmd_stdout).to include("0 failures")
+    expect(last_cmd_stdout).to match(
+      /Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running Crashing \(\.\/spec\/crash_spec\.rb:1\), outside of any example\./
+    )
+    expect(last_cmd_stdout).to include("1 example, 0 failures, 1 error occurred outside of examples")
+  end
+
+  it 'stops its workers, even ones that cannot tear down, when it and its process group get SIGTERM' do
+    write_file_formatted 'spec/wedged_spec.rb', "
+      RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
+      2.times do |i|
+        RSpec.describe(\"Wedged \#{i}\") do
+          it('keeps a thread that delays exit') { Thread.new { begin; sleep; ensure; sleep 60; end }; sleep 60 }
+        end
+      end
+    "
+    deadline_for = lambda { |seconds| Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds }
+    running = lambda do |pid|
+      state = `ps -o stat= -p #{pid}`.strip
+      !state.empty? && !state.start_with?('Z')
+    end
+
+    cd('.') do
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', 'spec/wedged_spec.rb',
+                          :out => 'stdout.txt', :err => File::NULL, :pgroup => true)
+      deadline = deadline_for.call(20)
+      sleep 0.05 until Dir['worker_*.pid'].size == 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      workers = Dir['worker_*.pid'].map { |file| Integer(File.read(file)) }
+      expect(workers.size).to eq(2)
+
+      # What `timeout` does: the command first, then its whole process group.
+      Process.kill(:TERM, pid)
+      Process.kill(:TERM, -pid)
+      _, status = Process.wait2(pid)
+
+      expect(status.termsig).to eq(Signal.list.fetch('TERM'))
+      expect(File.read('stdout.txt')).to include("Received SIGTERM; stopping the workers.")
+      deadline = deadline_for.call(10)
+      sleep 0.05 until workers.none?(&running) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      expect(workers.select(&running)).to eq([])
+    end
+  end
+
+  it 'stops workers stuck in an example once the coordinating process is gone' do
+    write_file_formatted 'spec/stuck_spec.rb', "
+      RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
+      RSpec.describe('One') { it('sleeps') { sleep 60 } }
+      RSpec.describe('Two') { it('sleeps') { sleep 60 } }
+    "
+    wait_until = lambda do |seconds, &condition|
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+      sleep 0.05 until condition.call || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      condition.call
+    end
+    # Orphans are adopted by whatever reaps them here -- a container's init may
+    # not, leaving zombies, which no longer run.
+    running = lambda do |pid|
+      state = `ps -o stat= -p #{pid}`.strip
+      !state.empty? && !state.start_with?('Z')
+    end
+
+    cd('.') do
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', 'spec/stuck_spec.rb', :out => File::NULL, :err => 'stderr.txt')
+      expect(wait_until.call(20) { Dir['worker_*.pid'].size == 2 }).to be true
+      workers = Dir['worker_*.pid'].map { |file| Integer(File.read(file)) }
+
+      Process.kill(:KILL, pid)
+      Process.wait(pid)
+
+      expect(wait_until.call(10) { workers.none?(&running) }).to be true
+      expect(File.read('stderr.txt').scan("is exiting because the coordinating process (pid #{pid}) is gone").size).to eq(2)
+    end
   end
 
   describe 'a worker that finishes but does not exit' do
@@ -439,7 +554,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       expect(last_cmd_stdout).not_to include("sending SIGTERM")
       expect(last_cmd_stdout).to include("2 examples, 0 failures")
       expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) failed while shutting down \(exit status 1\)/)
-      expect(worker_stderr).to include("did not exit within 0.5 seconds of finishing its last example group", "Threads at this point:", "Thread#join")
+      expect(worker_stderr).to include("did not exit within 0.5 seconds of finishing its last example group", "Threads at this point:")
+      expect(worker_stderr).to match(/[`'](Thread#)?join'/)
       expect(pids_in(last_cmd_stdout)).not_to be_empty
       pids_in(last_cmd_stdout).each { |pid| expect(alive?(pid)).to be false }
     end
@@ -461,7 +577,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       expect(elapsed).to be < 5
       expect(last_cmd_stdout).to include(
         "did not exit within 0.5 seconds of finishing its last example group",
-        "sending SIGTERM",
+        "so it was sent SIGTERM",
         "still alive 0.3 seconds after SIGTERM; sending SIGKILL"
       )
       pids_in(last_cmd_stdout).each { |pid| expect(alive?(pid)).to be false }

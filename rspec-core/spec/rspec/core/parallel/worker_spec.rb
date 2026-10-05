@@ -20,7 +20,8 @@ module RSpec::Core::Parallel
                  :stderr => stderr,
                  :exit => lambda { |status| exits << [:exit, status] },
                  :exit_now => lambda { |status| exits << [:exit_now, status] },
-                 :trap => lambda { |signal, &handler| traps[signal] = handler })
+                 :trap => lambda { |signal, command=nil, &handler| traps[signal] = command || handler },
+                 :watch_coordinator => false)
     end
 
     def frames
@@ -39,6 +40,49 @@ module RSpec::Core::Parallel
         expect(worker(1).test_env_number).to eq("")
         expect(worker(2).test_env_number).to eq("2")
         expect(worker(10).test_env_number).to eq("10")
+      end
+    end
+
+    describe "#watch_coordinator" do
+      it "exits at once, saying why, when its parent (the coordinating process) changes" do
+        stub_const("RSpec::Core::Parallel::Worker::COORDINATOR_POLL", 0.01)
+        parents = [100, 100, 100, 1]
+        instance = Worker.new(2, groups, jobs.first, results.last,
+                              :stderr => stderr,
+                              :exit_now => lambda { |status| exits << [:exit_now, status] },
+                              :ppid => lambda { parents.size > 1 ? parents.shift : parents.first })
+
+        expect(instance.watch_coordinator.join(5)).to be_truthy
+        expect(exits).to eq([[:exit_now, 1]])
+        expect(stderr.string).to include("worker 2 (pid #{Process.pid}) is exiting because the coordinating process (pid 100) is gone")
+      end
+
+      it "still exits when it cannot say why (its stderr is gone too)" do
+        stub_const("RSpec::Core::Parallel::Worker::COORDINATOR_POLL", 0.01)
+        parents = [100, 1]
+        instance = Worker.new(2, groups, jobs.first, results.last,
+                              :stderr => StringIO.new.tap(&:close),
+                              :exit_now => lambda { |status| exits << [:exit_now, status] },
+                              :ppid => lambda { parents.size > 1 ? parents.shift : parents.first })
+
+        expect(instance.watch_coordinator.join(5)).to be_truthy
+        expect(exits).to eq([[:exit_now, 1]])
+      end
+
+      it "is started by #run unless disabled" do
+        instance = Worker.new(2, [], jobs.first, results.last,
+                              :stderr => stderr,
+                              :exit => lambda { |status| exits << [:exit, status] },
+                              :exit_now => lambda { |status| exits << [:exit_now, status] },
+                              :trap => lambda { |*| },
+                              :ppid => lambda { 100 })
+        allow(instance).to receive(:watch_coordinator).and_return(nil)
+        jobs.last.send([:stop])
+
+        instance.run
+
+        expect(instance).to have_received(:watch_coordinator)
+        expect(exits).to eq([[:exit, 0]])
       end
     end
 
@@ -61,6 +105,12 @@ module RSpec::Core::Parallel
 
         traps.fetch('INT').call
         expect(exits).to eq([[:exit_now, 1]])
+      end
+
+      it "restores the default handling of the signals the coordinating process handles itself" do
+        worker.prepare
+
+        expect(traps).to include("TERM" => "DEFAULT", "HUP" => "DEFAULT")
       end
 
       it "drops the formatters inherited from the coordinating process" do
@@ -152,6 +202,7 @@ module RSpec::Core::Parallel
       it "dumps every thread's backtrace to stderr and aborts the process once the timeout passes" do
         RSpec.configuration.parallel_shutdown_timeout = 0.05
         instance = worker(4)
+        blocked_line = __LINE__ + 1
         blocked = Thread.new { sleep }
 
         instance.arm_watchdog.join
@@ -159,9 +210,9 @@ module RSpec::Core::Parallel
         expect(exits).to eq([[:exit_now, 1]])
         expect(stderr.string).to include(
           "RSpec parallel worker 4 (pid #{Process.pid}) did not exit within 0.05 seconds",
-          "(this watchdog)",
-          "Kernel#sleep"
+          "(this watchdog)"
         )
+        expect(stderr.string).to match(/worker_spec\.rb:#{blocked_line}:in /)
         expect(stderr.string.scan(/^  #<Thread:/).size).to be >= 3
       ensure
         blocked&.kill

@@ -286,7 +286,10 @@ streams results back as examples finish. Your formatters run only in the
 coordinating process and see the notifications of a normal run, so there is
 one seed, one summary, one profile and one exit code, and `--fail-fast`,
 `--only-failures`, `--next-failure`, `--seed`, filters and `path:line`
-selection keep working. You can make it the default with:
+selection keep working. Once the `--fail-fast` limit is reached no further
+groups are handed out and busy workers stop after their current example, so
+examples already running in other workers can still add failures. You can make
+it the default with:
 
 ```ruby
 RSpec.configure do |config|
@@ -307,16 +310,30 @@ before any worker exists: setting `TEST_ENV_NUMBER` afterwards does **not**
 give workers separate databases, so Rails suites run under `--parallel` share
 one test database until rspec-rails adds per-worker database support. Open
 connections, servers and similar resources acquired at load time are shared
-the same way; acquire them in `before(:suite)` to get one per worker.
+the same way; acquire them in `before(:suite)` to get one per worker. In
+particular, a database client that connected while the spec files loaded (a
+query at load time is enough) hands the same connection to every worker unless
+it reconnects after `fork` by itself -- as with app servers that preload, make
+each worker reconnect in a `before(:suite)` hook, e.g.
+`Mongoid.disconnect_clients`. On macOS, the system networking libraries do not
+survive `fork` well either: when loading the spec files makes real requests
+(resolving host names from several threads, say), workers can crash in
+`getaddrinfo` or hang. Keep such work out of load time -- in `before(:context)`
+hooks it runs in the workers instead.
 
 Formatters receive examples with their status, timing, pending details,
 exceptions (class name, message, backtrace, cause chain and aggregated
 failures; rebuilt as a subclass of the original class when that class exists
 in the coordinating process) and the group and example notifications in the
 order the worker produced them, plus `reporter.message`, deprecations and
-custom notifications whose options can be marshaled. Metadata that a worker
-mutates while running an example is not forwarded, and anything workers write
-to `$stdout`/`$stderr` directly is not sequenced with the formatter output.
+custom notifications whose options can be marshaled. Of the metadata a worker
+changes while running an example, only `:extra_failure_lines`, `:pending` and
+`:skip` are forwarded, and anything workers write to `$stdout`/`$stderr`
+directly is not sequenced with the formatter output. Listeners registered from
+inside a worker (for example with `reporter.register_listener` in a
+`before(:suite)` hook) are notified of that worker's example and group
+notifications before they are forwarded; run-level notifications (`start`,
+`dump_summary`, `close`, ...) only reach the coordinating process.
 
 A worker that has finished its last example group but does not exit (a
 non-daemon thread, a browser that will not quit, ...) is given
@@ -324,11 +341,18 @@ non-daemon thread, a browser that will not quit, ...) is given
 `after(:suite)` hooks and `at_exit` handlers; after that it dumps the
 backtraces of all its threads to stderr and is aborted, and the run exits
 with `config.error_exit_code`. The coordinator never waits unboundedly for a
-finished worker.
+finished worker. A worker that crashes or is killed (`exit!`, a segfault, the
+OOM killer, ...) fails the example it was running with the reason, so the
+example is listed under "Failed examples" and picked up by `--only-failures`;
+the rest of its example group does not run, and problems outside of examples
+count as errors outside of examples. Workers also exit on their own if the
+coordinating process disappears.
 
 `--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
 already set because another tool is running RSpec in parallel, RSpec prints a
-warning and runs serially. `--bisect` and `--dry-run` always run serially.
+warning and runs serially. `--bisect` and `--dry-run` always run serially, and
+the reproduction command `--bisect` prints includes `--no-parallel`, which (like
+`--parallel=0`) also overrides a `--parallel` stored in `.rspec`.
 
 ## Store Command Line Options `.rspec`
 

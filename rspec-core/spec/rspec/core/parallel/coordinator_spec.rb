@@ -119,7 +119,8 @@ module RSpec::Core::Parallel
                    sleep if behaviour == :never_exits
                  },
                  :exit_now => record_exit,
-                 :trap => lambda { |*| }).run
+                 :trap => lambda { |*| },
+                 :watch_coordinator => false).run
     end
 
     def coordinator(units, worker_count=2, options={})
@@ -196,11 +197,34 @@ module RSpec::Core::Parallel
     end
 
     describe "a worker that exits while running a group" do
-      it "reports it, leaves the examples it had not finished unknown and fails the run with the error exit code" do
+      it "fails the example it was running with the reason and leaves the rest of the group unknown" do
         config.error_exit_code = 5
         crashing = RSpec.describe("Crashing") do
           it("finishes") {}
-          it("dies") { raise NoMemoryError, "simulated worker death" }
+          it("dies") { Thread.current.kill }
+          it("never runs") {}
+        end
+        groups = [crashing, passing_group("B")]
+        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+        exit_code = coordinator(groups).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        dies = crashing.examples[1]
+        expect(crashing.examples.map { |e| e.execution_result.status }).to eq([:passed, :failed, nil])
+        expect(dies.exception).to be_a(WorkerError)
+        expect(dies.exception.message).to match(
+          /\AParallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running this example; the rest of Crashing \(.+\) did not run\.\z/
+        )
+        expect(dies.exception.backtrace).to eq([dies.location])
+        expect(dies.execution_result.run_time).to be >= 0
+        expect(messages).to include("Crashing dies", "3 examples, 1 failure", "rspec #{dies.location_rerun_argument}")
+      end
+
+      it "reports an error outside of examples when it was not running one" do
+        config.error_exit_code = 5
+        crashing = RSpec.describe("Crashing") do
+          before(:context) { Thread.current.kill }
           it("never runs") {}
         end
         groups = [crashing, passing_group("B")]
@@ -209,9 +233,11 @@ module RSpec::Core::Parallel
         exit_code = coordinator(groups).run
 
         expect(exit_code).to eq(5)
-        expect(messages).to match(/Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running Crashing/)
-        expect(crashing.examples.map { |e| e.execution_result.status }).to eq([:passed, nil, nil])
-        expect(messages).to include("3 examples, 0 failures")
+        expect(crashing.examples.first.execution_result.status).to be_nil
+        expect(messages).to match(
+          /An error occurred in a parallel worker\.\nParallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running Crashing \(.+\), outside of any example\./
+        )
+        expect(messages).to include("1 example, 0 failures, 1 error occurred outside of examples")
       end
     end
 
@@ -226,8 +252,8 @@ module RSpec::Core::Parallel
 
         expect(exit_code).to eq(3)
         expect(process.signals.map(&:first)).to eq(["TERM"])
-        expect(messages).to include("did not exit within 0.05 seconds of finishing its last example group", "sending SIGTERM")
-        expect(messages).to include("2 examples, 0 failures")
+        expect(messages).to include("did not exit within 0.05 seconds of finishing its last example group", "so it was sent SIGTERM")
+        expect(messages).to include("2 examples, 0 failures, 1 error occurred outside of examples")
       end
 
       it "is sent SIGKILL when it survives SIGTERM" do
@@ -270,6 +296,23 @@ module RSpec::Core::Parallel
         expect(messages).to include("did not stop within 0.1 seconds of being asked to stop early")
         expect(messages).to include("1 example, 1 failure")
       end
+
+      it "fails the example it is stuck in with the reason" do
+        config.parallel_shutdown_timeout = 0.1
+        config.fail_fast = true
+        stuck = RSpec.describe("Stuck") { it("sleeps") { sleep } }
+        groups = [failing_group("Fails"), stuck]
+        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+        exit_code = coordinator(groups).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(process.signals.map(&:first)).to eq(["TERM"])
+        expect(stuck.examples.first.exception.message).to match(
+          /\AParallel worker 2 \(pid \d+\) did not stop within 0\.1 seconds of being asked to stop early \(fail-fast or interrupt\) while running this example, so it was sent SIGTERM; the rest of Stuck \(.+\) did not run\.\z/
+        )
+        expect(messages).to include("2 examples, 2 failures")
+      end
     end
 
     it "terminates a worker that sends data it cannot decode" do
@@ -295,8 +338,8 @@ module RSpec::Core::Parallel
     end
 
     it "reports the groups that never ran when no worker remains" do
-      crashing = RSpec.describe("Crashing") { it("dies") { raise NoMemoryError, "simulated worker death" } }
-      groups = [crashing, RSpec.describe("Also crashing") { it("dies") { raise NoMemoryError, "simulated worker death" } }, passing_group("C"), passing_group("D")]
+      crashing = RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }
+      groups = [crashing, RSpec.describe("Also crashing") { it("dies") { Thread.current.kill } }, passing_group("C"), passing_group("D")]
       config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
 
       exit_code = coordinator(groups).run
@@ -437,6 +480,28 @@ module RSpec::Core::Parallel
       expect(messages).to include("survived SIGKILL; giving up on it")
     end
 
+    it "stops the workers when it is sent SIGTERM, then goes the way a serial run would" do
+      handler = nil
+      allow(RSpec::Core::Parallel).to receive(:trap_signals) do |signals, &block|
+        expect(signals).to eq(%w[TERM HUP])
+        handler = block
+        { "TERM" => "DEFAULT" }
+      end
+      allow(RSpec::Core::Parallel).to receive(:restore_signals)
+      groups = [passing_group("A"), RSpec.describe("Stuck") { it("sleeps") { sleep } }]
+      config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+      signaller = Thread.new do
+        sleep 0.01 until handler && process.signals.empty? && messages.include?(".")
+        handler.call("TERM")
+      end
+
+      expect { coordinator(groups).run }.to raise_error(SignalException, "SIGTERM")
+      signaller.join
+      expect(process.signals.map(&:first)).to eq(["TERM"])
+      expect(messages).to include("Received SIGTERM; stopping the workers.", "2 examples, 0 failures")
+      expect(RSpec::Core::Parallel).to have_received(:restore_signals).with("TERM" => "DEFAULT")
+    end
+
     it "copes with a worker that is gone by the time it is signalled" do
       worker_behaviours[2] = :never_exits
       config.parallel_shutdown_timeout = 0.05
@@ -445,7 +510,7 @@ module RSpec::Core::Parallel
       exit_code = coordinator([passing_group("A"), passing_group("B")]).run
 
       expect(exit_code).to eq(config.failure_exit_code)
-      expect(messages).to include("sending SIGTERM", "sending SIGKILL", "giving up on it")
+      expect(messages).to include("so it was sent SIGTERM", "sending SIGKILL", "giving up on it")
     end
 
     describe WorkerHandle do
@@ -479,7 +544,7 @@ module RSpec::Core::Parallel
       coordinator([passing_group("A"), passing_group("B")]).run
 
       expect(process.signals.map(&:first)).to eq(["TERM"])
-      expect(messages).to include("stopped reporting 0.05 seconds ago")
+      expect(messages).to include("stopped reporting for 0.05 seconds", "so it was sent SIGTERM")
     end
   end
 end

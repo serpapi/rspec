@@ -239,6 +239,22 @@ module RSpec::Core::Parallel
         expect(seq.stats[:queued]).to eq(1)
       end
 
+      it "also delivers everything queued once the queued notifications reach #{Sequencer::QUEUE_BYTES_BOUND} bytes" do
+        stub_const("RSpec::Core::Parallel::Sequencer::QUEUE_BYTES_BOUND", 1_000)
+        seq = sequencer(true)
+        seq.group_started(1, g1)
+        seq.group_started(2, g2)
+        seq.message(2, "big", 600)
+        seq.tick
+        expect(events.map(&:last)).to eq(%w[G1])
+        expect(seq.stats[:queued_bytes]).to eq(600)
+
+        seq.message(2, "bigger", 600)
+        seq.tick
+        expect(events.map(&:last)).to eq(%w[G1 G1 G2 big bigger])
+        expect(seq.stats).to include(:queued => 0, :queued_bytes => 0, :peak_queued_bytes => 1_200)
+      end
+
       it "delivers messages sent outside any group immediately, without touching the open group" do
         seq = sequencer(true)
         seq.group_started(1, g1)

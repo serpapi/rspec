@@ -14,6 +14,9 @@ module RSpec
       # independently bounds the wait from its side.
       # @private
       class Worker
+        # Seconds between checks that the coordinating process is still there.
+        COORDINATOR_POLL = 0.5
+
         attr_reader :number
 
         def initialize(number, example_groups, jobs, results, options={})
@@ -26,7 +29,11 @@ module RSpec
           @stderr = options[:stderr]
           @exit = options.fetch(:exit) { lambda { |status| exit(status) } }
           @exit_now = options.fetch(:exit_now) { lambda { |status| exit!(status) } }
-          @trap = options.fetch(:trap) { lambda { |signal, &handler| trap(signal, &handler) } }
+          @trap = options.fetch(:trap) do
+            lambda { |signal, command=nil, &handler| command ? trap(signal, command) : trap(signal, &handler) }
+          end
+          @ppid = options.fetch(:ppid) { Process.method(:ppid) }
+          @watch_coordinator = options.fetch(:watch_coordinator, true)
         end
 
         # @return [String] the `TEST_ENV_NUMBER` value for this worker, following
@@ -38,6 +45,7 @@ module RSpec
 
         # Never returns: ends the process when the coordinator has no more work.
         def run
+          watch_coordinator if @watch_coordinator
           prepare
           run_units
           @exit.call(0)
@@ -46,10 +54,33 @@ module RSpec
           @exit_now.call(1)
         end
 
+        # A worker notices that the coordinator is gone when it next reports
+        # to it -- which a worker stuck in a long example does not do. Its
+        # parent changes when the coordinator dies, so it does not outlive the
+        # coordinator by more than {COORDINATOR_POLL} seconds.
+        # @private
+        def watch_coordinator
+          coordinator = @ppid.call
+          thread = Thread.new do
+            sleep COORDINATOR_POLL while @ppid.call == coordinator
+            begin
+              (@stderr || $stderr).puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) is exiting because the " \
+                                        "coordinating process (pid #{coordinator}) is gone."
+            rescue IOError, SystemCallError
+              nil
+            end
+            @exit_now.call(1)
+          end
+          thread.report_on_exception = false
+          thread
+        end
+
         # @private
         def prepare
           Runner.disable_autorun!
           trap_interrupt
+          # The coordinator's own handlers for these are inherited; a worker just goes.
+          Coordinator::TERMINATION_SIGNALS.each { |signal| @trap.call(signal, 'DEFAULT') if Signal.list.key?(signal) }
           ENV['TEST_ENV_NUMBER'] = test_env_number
           @configuration.parallel_worker_number = @number
           @configuration.reset_reporter
