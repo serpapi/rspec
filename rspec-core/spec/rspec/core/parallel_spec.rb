@@ -180,8 +180,10 @@ module RSpec::Core
         expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
         expect(trap("HUP", nil)).to eq("IGNORE")
 
+        # How this Ruby reports a signal ignored with `nil` (MRI: `nil`, JRuby: "IGNORE").
+        ignored_with_nil = trap("HUP", nil)
         expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
-        expect(trap("HUP", suite_handler)).to be_nil
+        expect(trap("HUP", suite_handler)).to eq(ignored_with_nil)
 
         expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
         expect(trap("HUP", "DEFAULT")).to equal(suite_handler)

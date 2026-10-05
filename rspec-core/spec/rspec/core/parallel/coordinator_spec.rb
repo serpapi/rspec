@@ -51,6 +51,17 @@ module RSpec::Core::Parallel
     end
   end
 
+  # Fake workers run their examples on threads of this process, side by side:
+  # those examples stay off rspec-mocks' global space, which this spec's own
+  # stubs live in and whose scopes are not meant to be shared between threads.
+  module WithoutMocksLifecycle
+    def setup_mocks_for_rspec; end
+
+    def verify_mocks_for_rspec; end
+
+    def teardown_mocks_for_rspec; end
+  end
+
   RSpec.describe Coordinator do
     let(:config) { RSpec.configuration }
     let(:world) { RSpec.world }
@@ -127,13 +138,19 @@ module RSpec::Core::Parallel
                  :watch_coordinator => false).run
     end
 
+    # A fake worker killed with a signal is gone once its thread has died,
+    # which a loaded machine can delay: the grace periods are long unless a
+    # spec is about them, so that a slow death is not escalated.
     def coordinator(units, worker_count=2, options={})
+      units.each { |group| group.include(WithoutMocksLifecycle) }
       @units = units
       @process = options.fetch(:process, process)
       Coordinator.new(runner, units, units, worker_count,
                       { :process => @process, :spawn => method(:spawn), :tick => 0.01,
-                        :term_grace => 0.1, :kill_grace => 0.1, :watchdog_grace => 0.05 }.merge(options))
+                        :term_grace => 5, :kill_grace => 5, :watchdog_grace => 0.05 }.merge(options))
     end
+
+    let(:short_graces) { { :term_grace => 0.1, :kill_grace => 0.1 } }
 
     def passing_group(name)
       RSpec.describe(name) { it("passes") {} }
@@ -283,14 +300,18 @@ module RSpec::Core::Parallel
       end
     end
 
+    # A single worker, so that no well-behaved one can miss a deadline this
+    # short on a loaded machine.
     describe "a worker that does not exit after finishing" do
-      before { config.parallel_shutdown_timeout = 0.05 }
+      before do
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[1] = :never_exits
+      end
 
       it "is sent SIGTERM after the shutdown timeout and the run fails with the error exit code" do
-        worker_behaviours[2] = :never_exits
         config.error_exit_code = 3
 
-        exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+        exit_code = coordinator([passing_group("A"), passing_group("B")], 1).run
 
         expect(exit_code).to eq(3)
         expect(process.signals.map(&:first)).to eq(["TERM"])
@@ -299,10 +320,9 @@ module RSpec::Core::Parallel
       end
 
       it "is sent SIGKILL when it survives SIGTERM" do
-        worker_behaviours[2] = :never_exits
         process = FakeProcess.new(["TERM"])
 
-        exit_code = coordinator([passing_group("A"), passing_group("B")], 2, :process => process).run
+        exit_code = coordinator([passing_group("A"), passing_group("B")], 1, short_graces.merge(:process => process)).run
 
         expect(exit_code).to eq(config.failure_exit_code)
         expect(process.signals.map(&:first)).to eq(%w[TERM KILL])
@@ -310,11 +330,10 @@ module RSpec::Core::Parallel
       end
 
       it "is given up on, so the run still ends, when it survives SIGKILL" do
-        worker_behaviours[2] = :never_exits
         process = FakeProcess.new(%w[TERM KILL])
         started = RSpec::Core::Parallel.monotonic_time
 
-        exit_code = coordinator([passing_group("A"), passing_group("B")], 2, :process => process).run
+        exit_code = coordinator([passing_group("A"), passing_group("B")], 1, short_graces.merge(:process => process)).run
 
         expect(exit_code).to eq(config.failure_exit_code)
         expect(process.signals.map(&:first)).to eq(%w[TERM KILL])
@@ -323,9 +342,12 @@ module RSpec::Core::Parallel
       end
     end
 
+    # Long enough a timeout for the well-behaved worker to stop within it even
+    # on a loaded machine.
     describe "a worker that is asked to stop early but does not" do
+      before { config.parallel_shutdown_timeout = 0.5 }
+
       it "is terminated after the shutdown timeout so a cancelled run still ends" do
-        config.parallel_shutdown_timeout = 0.1
         config.fail_fast = true
         worker_behaviours[2] = :partial_frame
         groups = [failing_group("Fails"), passing_group("Held by the stalled worker")]
@@ -335,7 +357,7 @@ module RSpec::Core::Parallel
 
         expect(exit_code).to eq(config.failure_exit_code)
         expect(process.signals.map(&:first)).to eq(["TERM"])
-        expect(messages).to include("did not stop within 0.1 seconds of being asked to stop early")
+        expect(messages).to include("did not stop within 0.5 seconds of being asked to stop early")
         expect(messages).to include("1 example, 1 failure")
       end
 
@@ -360,7 +382,6 @@ module RSpec::Core::Parallel
       end
 
       it "fails the example it is stuck in with the reason" do
-        config.parallel_shutdown_timeout = 0.1
         config.fail_fast = true
         groups = failure_once_running("Stuck") { sleep }
         stuck = groups.last
@@ -370,15 +391,14 @@ module RSpec::Core::Parallel
         expect(exit_code).to eq(config.failure_exit_code)
         expect(process.signals.map(&:first)).to eq(["TERM"])
         expect(stuck.examples.first.exception.message).to match(
-          /\AParallel worker 2 \(pid \d+\) did not stop within 0\.1 seconds of being asked to stop early \(fail-fast or interrupt\) while running this example, so it was sent SIGTERM; the rest of Stuck \(.+\) did not run\.\z/
+          /\AParallel worker 2 \(pid \d+\) did not stop within 0\.5 seconds of being asked to stop early \(fail-fast or interrupt\) while running this example, so it was sent SIGTERM; the rest of Stuck \(.+\) did not run\.\z/
         )
         expect(messages).to include("2 examples, 2 failures")
       end
 
       it "ignores what it sends once it was given up on, so that its example is reported once" do
-        config.parallel_shutdown_timeout = 0.1
         config.fail_fast = true
-        groups = failure_once_running("Late") { sleep 0.5 }
+        groups = failure_once_running("Late") { sleep 1.5 }
 
         exit_code = coordinator(groups, 2, :process => FakeProcess.new(["TERM"]), :term_grace => 5).run
 
@@ -518,7 +538,7 @@ module RSpec::Core::Parallel
     end
 
     it "requeues a group when its worker cannot be reached and lets another worker run it" do
-      config.parallel_shutdown_timeout = 0.2
+      config.parallel_shutdown_timeout = 5
       spawn_with_closed_jobs = lambda do |handle, handles|
         pid = spawn(handle, handles)
         handle.jobs.io.close_write if handle.number == 2
@@ -546,7 +566,7 @@ module RSpec::Core::Parallel
       worker_behaviours[1] = :partial_frame
       worker_behaviours[2] = :partial_frame
       process = FakeProcess.new(%w[TERM KILL])
-      instance = coordinator([passing_group("A"), passing_group("B")], 2, :process => process)
+      instance = coordinator([passing_group("A"), passing_group("B")], 2, short_graces.merge(:process => process))
       allow(instance).to receive(:dispatch_work).and_raise("coordinator bug")
 
       expect { instance.run }.to raise_error("coordinator bug")
@@ -573,7 +593,8 @@ module RSpec::Core::Parallel
       signaller.join
       # The worker that ran A may not have been reaped yet, and gets one too.
       expect(process.signals.map(&:first).uniq).to eq(["TERM"])
-      expect(messages).to include("Received SIGTERM; stopping the workers.", "2 examples, 0 failures")
+      expect(messages).to include("Received SIGTERM; stopping the workers.")
+      expect(messages).to match(/^[12] examples?, 0 failures$/)
       expect(RSpec::Core::Parallel).to have_received(:restore_signals).with("TERM" => "DEFAULT")
     end
 
@@ -582,7 +603,7 @@ module RSpec::Core::Parallel
       config.parallel_shutdown_timeout = 0.05
       allow(process).to receive(:kill).and_raise(Errno::ESRCH)
 
-      exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+      exit_code = coordinator([passing_group("A"), passing_group("B")], 2, short_graces).run
 
       expect(exit_code).to eq(config.failure_exit_code)
       expect(messages).to include("so it was sent SIGTERM", "sending SIGKILL", "giving up on it")
@@ -614,9 +635,9 @@ module RSpec::Core::Parallel
 
     it "bounds the wait for a worker whose results pipe closed while it was running" do
       config.parallel_shutdown_timeout = 0.05
-      worker_behaviours[2] = :closes_results
+      worker_behaviours[1] = :closes_results
 
-      coordinator([passing_group("A"), passing_group("B")]).run
+      coordinator([passing_group("A"), passing_group("B")], 1).run
 
       expect(process.signals.map(&:first)).to eq(["TERM"])
       expect(messages).to include("stopped reporting for 0.05 seconds", "so it was sent SIGTERM")

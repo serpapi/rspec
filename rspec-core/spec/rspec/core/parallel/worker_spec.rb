@@ -209,6 +209,8 @@ module RSpec::Core::Parallel
         instance = worker(4)
         blocked_line = __LINE__ + 1
         blocked = Thread.new { sleep }
+        deadline = RSpec::Core::Parallel.monotonic_time + 10
+        sleep 0.01 until blocked.status == "sleep" || RSpec::Core::Parallel.monotonic_time > deadline
 
         instance.arm_watchdog.join
 

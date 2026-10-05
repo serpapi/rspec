@@ -131,9 +131,13 @@ module RSpec::Core::Parallel
         e
       end
 
+      # syntax_suggest's part of it depends on a search that can time out.
+      detailed = original.detailed_message(:highlight => false)
+      allow(original).to receive(:detailed_message).and_return(detailed)
+
       rebuilt = round_trip(original)
       expect(rebuilt).to be_a(SyntaxError)
-      expect(rebuilt.detailed_message).to eq(original.detailed_message(:highlight => false))
+      expect(rebuilt.detailed_message).to eq(detailed)
     end
 
     it "falls back to the message when no detailed message was shipped" do

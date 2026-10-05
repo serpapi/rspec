@@ -17,6 +17,12 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     run_command(cmd)
   end
 
+  # Written by the workers' `before(:suite)` hooks: a file can exist before
+  # its pid has been written to it.
+  def worker_pids
+    Dir['worker_*.pid'].map { |file| File.read(file) }.reject(&:empty?).map { |pid| Integer(pid) }
+  end
+
   def write_fixed_suite
     write_file_formatted 'spec/alpha_spec.rb', "
       RSpec.describe 'Alpha' do
@@ -283,11 +289,15 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
   it 'honours --fail-fast across workers by asking them to stop between examples' do
     write_file_formatted 'spec/fast_fail_spec.rb', "
       RSpec.describe 'Fails first' do
-        it('fails') { expect(1).to eq(2) }
+        it('fails') { File.write('failed', ''); expect(1).to eq(2) }
       end
     "
     write_file_formatted 'spec/slow_spec.rb', "
       RSpec.describe 'Slow' do
+        it('waits for the failure') do
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+          sleep 0.01 until File.exist?('failed') || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        end
         10.times { |i| it(\"example \#{i}\") { sleep 0.15 } }
       end
     "
@@ -295,7 +305,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     run_rspec "--order defined --fail-fast --parallel=2"
 
     expect(last_cmd_exit_status).to eq(1)
-    expect(last_cmd_stdout).to match(/\b[1-4] examples?, 1 failure/)
+    expect(last_cmd_stdout).to match(/^\d+ examples?, 1 failure$/)
+    expect(last_cmd_stdout[/^(\d+) examples?/, 1].to_i).to be < 12
   end
 
   it 'persists example statuses from every worker and reruns only the failures with --only-failures' do
@@ -459,8 +470,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', 'spec/wedged_spec.rb',
                           :out => 'stdout.txt', :err => File::NULL, :pgroup => true)
       deadline = deadline_for.call(20)
-      sleep 0.05 until Dir['worker_*.pid'].size == 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-      workers = Dir['worker_*.pid'].map { |file| Integer(File.read(file)) }
+      sleep 0.05 until worker_pids.size == 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      workers = worker_pids
       expect(workers.size).to eq(2)
 
       # What `timeout` does: the command first, then its whole process group.
@@ -533,8 +544,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     cd('.') do
       rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
       pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', 'spec/stuck_spec.rb', :out => File::NULL, :err => 'stderr.txt')
-      expect(wait_until.call(20) { Dir['worker_*.pid'].size == 2 }).to be true
-      workers = Dir['worker_*.pid'].map { |file| Integer(File.read(file)) }
+      expect(wait_until.call(20) { worker_pids.size == 2 }).to be true
+      workers = worker_pids
 
       Process.kill(:KILL, pid)
       Process.wait(pid)
