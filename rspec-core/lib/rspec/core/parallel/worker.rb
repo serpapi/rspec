@@ -37,6 +37,7 @@ module RSpec
           @ppid = options.fetch(:ppid) { Process.method(:ppid) }
           @watch_coordinator = options.fetch(:watch_coordinator, true)
           @signal_handlers = options.fetch(:signal_handlers, {})
+          @load_seed = options[:load_seed]
         end
 
         # @return [String] the `TEST_ENV_NUMBER` value for this worker, following
@@ -110,12 +111,14 @@ module RSpec
           end
         end
 
-        # Loads the spec files as the coordinator does after forking, and
-        # tells it which examples that defined and the first load error, if
-        # any: it uses the worker only if its own loading went the same way.
-        # What loading reports is for the coordinator to report.
+        # Loads the spec files as the coordinator does after forking, from
+        # its `Kernel.rand` seed, and tells it which examples that defined and
+        # the first load error, if any: it uses the worker only if its own
+        # loading went the same way. What loading reports is for the
+        # coordinator to report.
         # @private
         def load_spec_files
+          Kernel.srand(@load_seed) if @load_seed
           forwarding = @configuration.reporter
           @configuration.reporter = loading = LoadReporter.new(@configuration)
           @configuration.load_spec_files

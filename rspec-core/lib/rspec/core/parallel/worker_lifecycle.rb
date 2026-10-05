@@ -11,16 +11,20 @@ module RSpec
       # @private
       module WorkerLifecycle
         # Forks the workers before the spec files are loaded; each loads them
-        # itself and reports what it loaded.
+        # itself and reports what it loaded. Ruby reseeds `Kernel.rand` in a
+        # forked process, so every process starts loading from this one's
+        # seed, and values drawn while loading are the same in all of them.
         def start
           @started_at = now
+          @load_seed = Kernel.srand
+          Kernel.srand(@load_seed)
           start_workers(nil)
         end
 
         # Ends the workers that are not done -- workers forked before loading
         # when the run ends early or goes on serially: they have run nothing.
         def dismiss
-          live = @workers.reject(&:done?)
+          live = live_workers
           live.each { |worker| dismiss_worker(worker) }
           give_up_unless_gone(live, @kill_grace)
         end
@@ -41,7 +45,13 @@ module RSpec
         end
 
         def fork_worker(worker, workers)
-          worker.fork_worker(@process, @units, workers, @signal_handlers)
+          worker.fork_worker(@process, @units, workers, :signal_handlers => @signal_handlers, :load_seed => @load_seed)
+        end
+
+        # Including those a failed `fork` left without a process.
+        def live_workers
+          @workers.each { |worker| worker.state = :exited if worker.pid.nil? }
+          @workers.reject(&:done?)
         end
 
         # Workers started loading the spec files when this process did, so
@@ -89,8 +99,7 @@ module RSpec
         # Runs on every exit path, so an exception in the coordinator can never
         # leave workers behind. Bounded by the same TERM/KILL grace periods.
         def terminate_remaining_workers
-          @workers.each { |worker| worker.state = :exited if worker.pid.nil? }
-          live = @workers.reject(&:done?)
+          live = live_workers
           return if live.empty?
 
           live.each do |worker|

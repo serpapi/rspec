@@ -26,8 +26,13 @@ module RSpec::Core
     context "when every worker is to load the spec files itself", :skip => !RSpec::Support::RubyFeatures.fork_supported? do
       before { config.parallel_preload = false }
 
-      it "forks the requested workers before loading, whatever the number of spec files, and gives them the groups" do
+      def spec_files(count)
+        allow(config).to receive(:files_to_run).and_return(Array.new(count) { |i| "./spec/f#{i}_spec.rb" })
+      end
+
+      it "forks the requested workers before loading, and gives them the groups" do
         config.parallel_workers = 3
+        spec_files(5)
         expect(Parallel::Coordinator).to receive(:new).with(runner, 3).and_return(started)
         plan.before_loading
         expect(started).to have_received(:start)
@@ -35,6 +40,33 @@ module RSpec::Core
         all = groups(1).tap { |list| list.first.describe("nested") { it("e") {} } } + groups(2)
         expect(plan.coordinator_for(all)).to be(started)
         expect(started).to have_received(:assign).with(all, all)
+      end
+
+      it "forks no more workers than there are spec files to load" do
+        config.parallel_workers = 8
+        spec_files(3)
+        expect(Parallel::Coordinator).to receive(:new).with(runner, 3).and_return(started)
+
+        plan.before_loading
+      end
+
+      it "forks two workers for a single spec file, which may define several groups" do
+        config.parallel_workers = 8
+        spec_files(1)
+        expect(Parallel::Coordinator).to receive(:new).with(runner, 2).and_return(started)
+
+        plan.before_loading
+      end
+
+      it "dismisses the workers it forked when a later fork fails" do
+        config.parallel_workers = 2
+        failing = instance_double(Parallel::Coordinator, :dismiss => nil)
+        allow(failing).to receive(:start).and_raise(Errno::EAGAIN)
+        allow(Parallel::Coordinator).to receive(:new).and_return(failing)
+
+        expect { plan.before_loading }.to raise_error(Errno::EAGAIN)
+        plan.dismiss
+        expect(failing).to have_received(:dismiss)
       end
 
       it "dismisses them, and runs serially, when fewer than two groups are to run" do
@@ -72,25 +104,41 @@ module RSpec::Core
         plan.before_loading
       end
 
-      it "warns, and forks after loading, when the worker count is set while the spec files load" do
+      it "warns, and runs serially, when the worker count is set while the spec files load" do
         plan.before_loading
         config.parallel_workers = 2
-        expect(RSpec).to receive(:warning).with(a_string_including("`config.parallel_workers` was set while they were loading"),
+        expect(RSpec).to receive(:warning).with(a_string_including(
+          "Ignoring `--parallel`: `config.parallel_workers` was set while the spec files were loading, too late to fork " \
+          "the workers before them as `config.parallel_preload = false` asks."
+        ).and(ending_with("Running serially.")), :call_site => nil)
+        expect(Parallel::Coordinator).not_to receive(:new)
+
+        expect(plan.coordinator_for(groups(3))).to be_nil
+      end
+
+      it "warns, and runs serially, when the status file --only-failures needs is configured while the spec files load" do
+        config.parallel_workers = 2
+        config.force(:only_failures => true)
+        plan.before_loading
+        config.example_status_persistence_file_path = "examples.txt"
+        expect(RSpec).to receive(:warning).with(a_string_including("`config.example_status_persistence_file_path` " \
+                                                                   "(for `--only-failures`) was set while the spec files were loading"),
                                                 :call_site => nil)
 
-        expect(plan.coordinator_for(groups(3))).to be_a(Parallel::Coordinator)
+        expect(plan.coordinator_for(groups(3))).to be_nil
       end
     end
 
-    it "warns, and forks after loading, when told while the spec files load that each worker is to load them itself",
+    it "warns, and runs serially, when told while the spec files load that each worker is to load them itself",
        :skip => !RSpec::Support::RubyFeatures.fork_supported? do
       config.parallel_workers = 2
       plan.before_loading
       config.parallel_preload = false
-      expect(RSpec).to receive(:warning).with(a_string_including("not before them as `config.parallel_preload = false` asks: " \
-                                                                 "it was set while they were loading"), :call_site => nil)
+      expect(RSpec).to receive(:warning).with(a_string_including("`config.parallel_preload = false` was set while the spec " \
+                                                                 "files were loading"), :call_site => nil)
+      expect(Parallel::Coordinator).not_to receive(:new)
 
-      expect(plan.coordinator_for(groups(3))).to be_a(Parallel::Coordinator)
+      expect(plan.coordinator_for(groups(3))).to be_nil
     end
 
     it "does not warn about the fork point of a run that is not parallel" do

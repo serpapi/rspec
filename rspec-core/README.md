@@ -323,23 +323,26 @@ Or have every worker load the spec files itself: with `--no-parallel-preload`
 (or `config.parallel_preload = false` in a `--require`d file) the workers are
 forked as soon as the `--require`d files are loaded, before the spec files.
 This and the worker count must be known by then: set in a helper that the spec
-files require, they come too late, and the workers are forked after loading,
-with a warning. Each worker then loads the spec files with its
-`TEST_ENV_NUMBER` already set, and the coordinating process loads them too,
-for its reporting. Nothing the spec files do while loading is shared then --
-connections, threads, system libraries they initialize -- and helpers they
-require (rather than `.rspec`) load in every worker, so a Rails app whose spec
-files `require 'rails_helper'` boots in each worker with its own
-`TEST_ENV_NUMBER`. The cost is loading the spec files once per process: more
-CPU and memory, though they load at the same time, and whatever they do at
-load time is done that many times. A worker is given work only once it has
-loaded the examples the coordinating process has (the same ids and locations),
-and what it runs is reported as it described it, so a description computed
-while loading -- from the time, say -- is the worker's. One that loads other
-examples, gets a load error the coordinating process did not get, or is still
-loading long after the coordinating process finished is not used: that counts
-as an error outside of examples, and its groups run in the other workers --
-or, when no worker is left, do not run.
+files require, they come too late, and the run is serial, with a warning --
+forking after loading is what this setting avoids. There are no more workers
+than spec files (but two for a single file). Each worker then loads the spec
+files with its `TEST_ENV_NUMBER` already set, and the coordinating process
+loads them too, for its reporting; all of them start from the coordinating
+process's `Kernel.rand` seed, so values drawn while loading are the same in
+every process, as they are in a serial run with that seed. Nothing the spec
+files do while loading is shared then -- connections, threads, system
+libraries they initialize -- and helpers they require (rather than `.rspec`)
+load in every worker, so a Rails app whose spec files `require 'rails_helper'`
+boots in each worker with its own `TEST_ENV_NUMBER`. The cost is loading the
+spec files once per process: more CPU and memory, though they load at the same
+time, and whatever they do at load time is done that many times. A worker is
+given work only once it has loaded the examples the coordinating process has
+(the same ids and locations), and what it runs is reported as it described it,
+so a description computed while loading -- from the time, say -- is the
+worker's. One that loads other examples, gets a load error the coordinating
+process did not get, or is still loading long after the coordinating process
+finished is not used: that counts as an error outside of examples, and its
+groups run in the other workers -- or, when no worker is left, do not run.
 
 Formatters receive examples with their status, timing, pending details,
 exceptions (class name, message, backtrace, cause chain and aggregated

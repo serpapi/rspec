@@ -213,13 +213,13 @@ module RSpec::Core::Parallel
     end
 
     describe "forked before the spec files were loaded" do
-      def loading_worker
+      def loading_worker(options={})
         Worker.new(2, nil, jobs.first, results.last,
-                   :stderr => stderr,
-                   :exit => lambda { |status| exits << [:exit, status] },
-                   :exit_now => lambda { |status| exits << [:exit_now, status] },
-                   :trap => lambda { |*| },
-                   :watch_coordinator => false)
+                   { :stderr => stderr,
+                     :exit => lambda { |status| exits << [:exit, status] },
+                     :exit_now => lambda { |status| exits << [:exit_now, status] },
+                     :trap => lambda { |*| },
+                     :watch_coordinator => false }.merge(options))
       end
 
       def write_spec_file(dir, content)
@@ -268,6 +268,22 @@ module RSpec::Core::Parallel
           expect(RSpec.world.non_example_failure).to be_falsey
           expect(exits).to eq([[:exit_now, 0]])
         end
+      end
+
+      it "loads them from the coordinating process's `Kernel.rand` seed, which a forked process does not keep" do
+        previous = Kernel.srand(5)
+        Dir.mktmpdir do |dir|
+          write_spec_file(dir, "RSpec.describe(\"drew \#{rand(1_000_000)}\") { it('e') { } }")
+          thread = run_in_thread(loading_worker(:load_seed => 1234))
+
+          results.first.receive
+          jobs.last.send([:stop])
+          expect(thread.join(10)).to be_truthy
+
+          expect(RSpec.world.example_groups.first.description).to eq("drew #{Random.new(1234).rand(1_000_000)}")
+        end
+      ensure
+        Kernel.srand(previous)
       end
     end
 

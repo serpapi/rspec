@@ -677,6 +677,20 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       cd('.') { Dir['loaded_*'].map { |file| file.split('_', 4).last }.tally }
     end
 
+    # A process of its own, where the `--require`d files load afresh. Given at
+    # most 60 seconds.
+    def rspec_process(*args)
+      cd('.') do
+        rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+        pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
+        sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
+                         Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        Process.kill(:KILL, pid) && Process.wait(pid) unless status
+        [status, File.read('stdout.txt'), File.read('stderr.txt')]
+      end
+    end
+
     it 'has every worker load the spec files itself, once TEST_ENV_NUMBER is set, and run what it loaded' do
       write_marking_spec_files
 
@@ -717,31 +731,58 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       expect(last_cmd_stdout).to include("3 examples, 0 failures, 1 error occurred outside of examples")
     end
 
-    it 'warns, and forks after loading, when turned off from a spec file, too late' do
+    it 'warns, and runs serially rather than fork after loading, when turned off from a spec file, too late' do
       write_file_formatted 'spec/late_spec.rb', "
         RSpec.configure { |c| c.parallel_preload = false }
-        RSpec.describe('Late') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
-        RSpec.describe('Later') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
+        RSpec.describe('Late') { it('runs serially') { expect(RSpec.configuration.parallel_worker_number).to be_nil } }
+        RSpec.describe('Later') { it('runs serially') { expect(RSpec.configuration.parallel_worker_number).to be_nil } }
       "
 
       run_rspec '--parallel=2 spec/late_spec.rb'
 
       expect(last_cmd_stdout).to include("2 examples, 0 failures")
-      expect(last_cmd_stderr).to include("forked after the spec files were loaded, not before them as " \
-                                         "`config.parallel_preload = false` asks: it was set while they were loading")
+      expect(last_cmd_stderr).to include("Ignoring `--parallel`: `config.parallel_preload = false` was set while the spec " \
+                                         "files were loading", "Running serially.")
     end
 
-    it 'warns, and forks after loading, when the worker count is set from a spec file, too late' do
+    it 'warns, and runs serially rather than fork after loading, when the worker count is set from a spec file, too late' do
       write_file_formatted 'spec/late_spec.rb', "
         RSpec.configure { |c| c.parallel_workers = 2 }
-        RSpec.describe('Late') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
-        RSpec.describe('Later') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
+        RSpec.describe('Late') { it('runs serially') { expect(RSpec.configuration.parallel_worker_number).to be_nil } }
+        RSpec.describe('Later') { it('runs serially') { expect(RSpec.configuration.parallel_worker_number).to be_nil } }
       "
 
       run_rspec '--no-parallel-preload spec/late_spec.rb'
 
       expect(last_cmd_stdout).to include("2 examples, 0 failures")
-      expect(last_cmd_stderr).to include("`config.parallel_workers` was set while they were loading")
+      expect(last_cmd_stderr).to include("`config.parallel_workers` was set while the spec files were loading", "Running serially.")
+    end
+
+    it 'draws the same values with Kernel.rand while loading as a serial run with the same seed' do
+      write_file_formatted 'spec/spec_helper.rb', "RSpec.configure { |c| Kernel.srand(c.seed) }"
+      %w[a b].each do |name|
+        write_file_formatted "spec/#{name}_spec.rb", "
+          RSpec.describe('#{name.upcase}') do
+            3.times do
+              n = rand(1000)
+              it(\"handles \#{n}\") do
+                File.write(\"ran_\#{RSpec.configuration.parallel_worker_number.inspect}\", '')
+                expect(n).to be_even
+              end
+            end
+          end
+        "
+      end
+
+      _, serial, = rspec_process('--seed', '1234', '--require', './spec/spec_helper')
+      status, parallel, errors = rspec_process('--seed', '1234', '--require', './spec/spec_helper', '--parallel=2',
+                                               '--no-parallel-preload')
+
+      expect(errors).to eq("")
+      expect(cd('.') { Dir['ran_*'] - ['ran_nil'] }).not_to be_empty
+      expect(serial.lines.grep(/^rspec /)).not_to be_empty
+      expect(parallel.lines.grep(/^rspec |examples, /)).to match_array(serial.lines.grep(/^rspec |examples, /))
+      expect(status.exitstatus).to eq(1)
     end
 
     it 'reports the groups and examples as the worker that ran them described them' do
@@ -778,15 +819,10 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       write_marking_spec_files
 
       # A real process: the abort ends it with `exit!`.
-      cd('.') do
-        rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
-        pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', '--no-parallel-preload', '--only-failures',
-                            :out => 'stdout.txt', :err => 'stderr.txt')
-        _, status = Process.wait2(pid)
+      status, out, err = rspec_process('--parallel=2', '--no-parallel-preload', '--only-failures')
 
-        expect(status.exitstatus).to eq(1)
-        expect(File.read('stderr.txt') + File.read('stdout.txt')).to include("example_status_persistence_file_path")
-      end
+      expect(status.exitstatus).to eq(1)
+      expect(err + out).to include("example_status_persistence_file_path")
       expect(loaders).to eq("none" => 3)
     end
 

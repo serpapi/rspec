@@ -26,18 +26,46 @@ module RSpec
           end
 
           @decided = true
-          requested = Parallel.requested_worker_count(@configuration)
-          @coordinator = Coordinator.new(@runner, requested).tap(&:start) if requested && requested >= 2
+          count = worker_count
+          return unless count && count >= 2
+
+          # Assigned first, so that workers forked before a `fork` that fails
+          # are dismissed too.
+          @coordinator = Coordinator.new(@runner, count)
+          @coordinator.start
         end
 
         # @return [Coordinator, nil] the coordinator to run the loaded groups,
         #   or `nil` for a serial run
         def coordinator_for(example_groups)
-          unless @decided
-            coordinator = Parallel.coordinator_for(@runner, example_groups)
-            warn_late if coordinator && !@configuration.parallel_preload?
-            return coordinator
-          end
+          return assign(example_groups) if @decided
+          return Parallel.coordinator_for(@runner, example_groups) if @configuration.parallel_preload?
+
+          # Too late to fork before loading, and forking after loading is
+          # what this run was configured not to do.
+          requested = Parallel.requested_worker_count(@configuration)
+          warn_late if requested && requested >= 2
+          nil
+        end
+
+        # Ends the workers forked before loading that the run did not use.
+        def dismiss
+          @coordinator&.dismiss
+        end
+
+      private
+
+        # Each worker loads every spec file, so there are no more of them
+        # than spec files -- a spec file usually defines one top-level group
+        # -- but two for a single file, which may define several.
+        def worker_count
+          requested = Parallel.requested_worker_count(@configuration)
+          return requested unless requested && requested > 2
+
+          @configuration.files_to_run.uniq.size.clamp(2, requested)
+        end
+
+        def assign(example_groups)
           return nil unless @coordinator
 
           units = Parallel.units_for(example_groups, @configuration)
@@ -50,18 +78,12 @@ module RSpec
           @coordinator
         end
 
-        # Ends the workers forked before loading that the run did not use.
-        def dismiss
-          @coordinator&.dismiss
-        end
-
-      private
-
         def warn_late
-          RSpec.warning "The parallel workers are forked after the spec files were loaded, not before them as " \
-                        "`config.parallel_preload = false` asks: #{@postponed_by || 'it'} was set while they were " \
-                        "loading. Set it before they load: on the command line, in `.rspec` or in a `--require`d " \
-                        "file.", :call_site => nil
+          what = @postponed_by || '`config.parallel_preload = false`'
+          RSpec.warning "Ignoring `--parallel`: #{what} was set while the spec files were loading, too late to fork " \
+                        "the workers before them as `config.parallel_preload = false` asks. Set it before they " \
+                        "load: on the command line, in `.rspec` or in a `--require`d file. Running serially.",
+                        :call_site => nil
         end
       end
     end
