@@ -281,7 +281,11 @@ module RSpec
       # its reporting. Nothing the spec files do while loading (connections,
       # threads, system libraries they initialize) is then shared with the
       # workers, at the cost of loading them once per worker. A worker that
-      # does not load the same examples as this process is not used.
+      # does not load the same examples as this process is not used. It, and
+      # {#parallel_workers}, have to be set before the spec files load (on the
+      # command line, in `.rspec` or in a `--require`d file); set while they
+      # load, they come too late, and the workers are forked after loading,
+      # with a warning.
       # @return [Boolean]
       add_setting :parallel_preload
 

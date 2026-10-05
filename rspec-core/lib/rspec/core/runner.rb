@@ -83,19 +83,19 @@ module RSpec
       # @param err [IO] error stream
       # @param out [IO] output stream
       def run(err, out)
-        coordinator = nil
-        setup(err, out) { coordinator = Parallel.coordinator_before_loading(self) }
+        parallel = Parallel::Plan.new(self)
+        setup(err, out) { parallel.before_loading }
         return @configuration.reporter.exit_early(exit_code) if RSpec.world.wants_to_quit
 
         example_groups = @world.ordered_example_groups
-        coordinator = Parallel.coordinator_for(self, example_groups, coordinator)
+        coordinator = parallel.coordinator_for(example_groups)
 
         (coordinator ? coordinator.run : run_specs(example_groups)).tap do
           persist_example_statuses
         end
       ensure
         # Workers forked before loading that the run did not get to use.
-        coordinator&.dismiss
+        parallel&.dismiss
       end
 
       # Wires together the various configuration objects and state holders.

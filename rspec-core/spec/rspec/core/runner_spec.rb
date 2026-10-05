@@ -367,8 +367,8 @@ module RSpec::Core
           RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
           RSpec.describe("group 2") { example("passing") { expect(1).to eq(1) } }
           allow(config).to receive(:load_spec_files)
-          coordinator = instance_double(Parallel::Coordinator, :run => 17, :dismiss => nil)
-          expect(Parallel).to receive(:coordinator_for).with(an_instance_of(Runner), world.ordered_example_groups, nil).and_return(coordinator)
+          coordinator = instance_double(Parallel::Coordinator, :run => 17)
+          expect(Parallel).to receive(:coordinator_for).with(an_instance_of(Runner), world.ordered_example_groups).and_return(coordinator)
           config.example_status_persistence_file_path = "statuses.txt"
           expect(ExampleStatusPersister).to receive(:persist).with(world.all_examples, "statuses.txt")
 
@@ -378,35 +378,37 @@ module RSpec::Core
           expect(runner.run(err, out)).to eq(17)
         end
 
-        it 'forks workers that are to load the spec files themselves before loading them, and hands them the groups' do
-          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
-          coordinator = instance_double(Parallel::Coordinator, :run => 0, :dismiss => nil)
-          expect(Parallel).to receive(:coordinator_before_loading).ordered.and_return(coordinator)
-          expect(config).to receive(:load_spec_files).ordered
-          expect(Parallel).to receive(:coordinator_for).with(an_instance_of(Runner), world.ordered_example_groups, coordinator).
-            and_return(coordinator)
+        context 'with a parallel plan' do
+          let(:plan) { instance_double(Parallel::Plan, :before_loading => nil, :dismiss => nil) }
 
-          expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
-        end
+          before { allow(Parallel::Plan).to receive(:new).and_return(plan) }
 
-        it 'dismisses workers forked before loading when the run ends early' do
-          coordinator = instance_double(Parallel::Coordinator, :dismiss => nil)
-          allow(Parallel).to receive(:coordinator_before_loading).and_return(coordinator)
-          allow(config).to receive(:load_spec_files) { world.wants_to_quit = true }
-          expect(Parallel).not_to receive(:coordinator_for)
+          it 'lets it fork workers before the spec files load, then hands it the groups, and dismisses what it did not use' do
+            RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+            coordinator = instance_double(Parallel::Coordinator, :run => 0)
+            expect(plan).to receive(:before_loading).ordered
+            expect(config).to receive(:load_spec_files).ordered
+            expect(plan).to receive(:coordinator_for).with(world.ordered_example_groups).ordered.and_return(coordinator)
+            expect(plan).to receive(:dismiss).ordered
 
-          Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)
+            expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
+          end
 
-          expect(coordinator).to have_received(:dismiss)
-        end
+          it 'dismisses the workers it forked when the run ends early' do
+            allow(config).to receive(:load_spec_files) { world.wants_to_quit = true }
+            expect(plan).not_to receive(:coordinator_for)
 
-        it 'dismisses workers forked before loading when loading raises' do
-          coordinator = instance_double(Parallel::Coordinator, :dismiss => nil)
-          allow(Parallel).to receive(:coordinator_before_loading).and_return(coordinator)
-          allow(config).to receive(:load_spec_files).and_raise(SystemExit)
+            Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)
 
-          expect { Runner.new(ConfigurationOptions.new([]), config, world).run(err, out) }.to raise_error(SystemExit)
-          expect(coordinator).to have_received(:dismiss)
+            expect(plan).to have_received(:dismiss)
+          end
+
+          it 'dismisses the workers it forked when loading raises' do
+            allow(config).to receive(:load_spec_files).and_raise(SystemExit)
+
+            expect { Runner.new(ConfigurationOptions.new([]), config, world).run(err, out) }.to raise_error(SystemExit)
+            expect(plan).to have_received(:dismiss)
+          end
         end
 
         it 'supports a test-queue like subclass that can perform setup once and run different sets of example groups multiple times' do

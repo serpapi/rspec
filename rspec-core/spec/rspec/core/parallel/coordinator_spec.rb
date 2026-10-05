@@ -124,7 +124,9 @@ module RSpec::Core::Parallel
     # What a worker forked before loading reports once it has loaded the spec
     # files: by default, the examples this process has.
     def report_loaded(results, behaviour)
-      digest = behaviour == :loads_other_examples ? "other examples" : RSpec::Core::Parallel.suite_digest(world)
+      digest = RSpec::Core::Parallel.suite_digest(world)
+      digest = digest.merge("./spec/other_spec.rb" => "other examples") if behaviour == :loads_other_examples
+      digest = digest.merge("./spec/a_spec.rb" => "a", "./spec/b_spec.rb" => "b") if behaviour == :loads_other_files
       failure = "An error occurred while loading ./spec/x_spec.rb. RuntimeError: boom" if behaviour == :fails_to_load
       results.send([:loaded, digest, failure])
     end
@@ -456,9 +458,18 @@ module RSpec::Core::Parallel
         exit_code = run_started(groups)
 
         expect(exit_code).to eq(5)
-        expect(messages).to match(/Parallel worker 2 \(pid \d+\) loaded other examples than this process .*--parallel-preload.*, so it was not used\./)
+        expect(messages).to match(%r{Parallel worker 2 \(pid \d+\) loaded other examples than this process from \./spec/other_spec\.rb \(.*--parallel-preload.*, so it was not used\.})
         expect(messages).to include("3 examples, 0 failures, 1 error occurred outside of examples")
         expect(process.signals.map(&:first)).to eq(["KILL"])
+      end
+
+      it "names the first spec file a worker loaded differently and counts the others" do
+        worker_behaviours[2] = :loads_other_files
+        groups = %w[A B].map { |name| passing_group(name) }
+
+        run_started(groups)
+
+        expect(messages).to match(%r{loaded other examples than this process from \./spec/a_spec\.rb and 1 more spec file \(})
       end
 
       it "does not use a worker whose loading failed when this process's did not" do

@@ -685,7 +685,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
       run_rspec '--parallel=2 --no-parallel-preload'
 
-      expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) loaded other examples than this process/)
+      expect(last_cmd_stdout).to match(%r{Parallel worker 2 \(pid \d+\) loaded other examples than this process from \./spec/z_spec\.rb \(})
       expect(last_cmd_stdout).to include("4 examples, 0 failures, 1 error occurred outside of examples")
       expect(last_cmd_exit_status).to eq(1)
     end
@@ -705,6 +705,60 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 20
       expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds while loading the spec files, so it was sent SIGTERM\./)
       expect(last_cmd_stdout).to include("3 examples, 0 failures, 1 error occurred outside of examples")
+    end
+
+    it 'warns, and forks after loading, when turned off from a spec file, too late' do
+      write_file_formatted 'spec/late_spec.rb', "
+        RSpec.configure { |c| c.parallel_preload = false }
+        RSpec.describe('Late') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
+        RSpec.describe('Later') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
+      "
+
+      run_rspec '--parallel=2 spec/late_spec.rb'
+
+      expect(last_cmd_stdout).to include("2 examples, 0 failures")
+      expect(last_cmd_stderr).to include("forked after the spec files were loaded, not before them as " \
+                                         "`config.parallel_preload = false` asks: it was set while they were loading")
+    end
+
+    it 'warns, and forks after loading, when the worker count is set from a spec file, too late' do
+      write_file_formatted 'spec/late_spec.rb', "
+        RSpec.configure { |c| c.parallel_workers = 2 }
+        RSpec.describe('Late') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
+        RSpec.describe('Later') { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } }
+      "
+
+      run_rspec '--no-parallel-preload spec/late_spec.rb'
+
+      expect(last_cmd_stdout).to include("2 examples, 0 failures")
+      expect(last_cmd_stderr).to include("`config.parallel_workers` was set while they were loading")
+    end
+
+    it 'runs the groups of a single spec file across the workers' do
+      write_file_formatted 'spec/one_spec.rb', "
+        3.times { |i| RSpec.describe(\"G\#{i}\") { it('runs in a worker') { expect(RSpec.configuration.parallel_worker_number).not_to be_nil } } }
+      "
+
+      run_rspec '--parallel=2 --no-parallel-preload spec/one_spec.rb'
+
+      expect(last_cmd_stdout).to include("3 examples, 0 failures")
+      expect(last_cmd_stderr).to eq("")
+    end
+
+    it 'forks nothing for an --only-failures run that is about to abort for want of a status file' do
+      write_marking_spec_files
+
+      # A real process: the abort ends it with `exit!`.
+      cd('.') do
+        rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+        pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', '--no-parallel-preload', '--only-failures',
+                            :out => 'stdout.txt', :err => 'stderr.txt')
+        _, status = Process.wait2(pid)
+
+        expect(status.exitstatus).to eq(1)
+        expect(File.read('stderr.txt') + File.read('stdout.txt')).to include("example_status_persistence_file_path")
+      end
+      expect(loaders).to eq("none" => 3)
     end
 
     it 'goes on like a serial run when a spec file fails to load in every process' do

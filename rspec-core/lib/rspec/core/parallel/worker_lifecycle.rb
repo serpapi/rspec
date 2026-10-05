@@ -64,9 +64,11 @@ module RSpec
           if failure && !@load_failed
             not_used(worker, "could not load the spec files: #{failure}")
           elsif digest != @suite_digest
-            not_used(worker, "loaded other examples than this process (spec files that define examples depending " \
-                             "on the process, the time or randomness?); with `--parallel-preload` workers are " \
-                             "forked after the spec files are loaded")
+            files = (digest.keys | @suite_digest.keys).reject { |file| digest[file] == @suite_digest[file] }
+            not_used(worker, "loaded other examples than this process from #{files.first}" \
+                             "#{" and #{Formatters::Helpers.pluralize(files.size - 1, 'more spec file')}" if files.size > 1} " \
+                             "(examples defined depending on the process, the time or randomness?); with " \
+                             "`--parallel-preload` workers are forked after the spec files are loaded")
           end
         end
 

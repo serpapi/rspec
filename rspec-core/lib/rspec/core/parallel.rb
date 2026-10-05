@@ -8,6 +8,7 @@ RSpec::Support.require_rspec_core "parallel/suite_index"
 RSpec::Support.require_rspec_core "parallel/worker_handle"
 RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
 RSpec::Support.require_rspec_core "parallel/coordinator"
+RSpec::Support.require_rspec_core "parallel/plan"
 
 module RSpec
   module Core
@@ -25,57 +26,38 @@ module RSpec
       # stop or exit in time.
       class WorkerError < StandardError; end
 
-      # @return [Coordinator, nil] a coordinator for the groups, or `nil` when
-      #   the run should proceed serially (not requested, not possible or not
-      #   worth it). Warns when a requested parallel run is not possible.
-      #   Workers forked before the spec files were loaded (`started`) are
-      #   used, or dismissed when the run is to be serial or needs fewer.
-      def self.coordinator_for(runner, example_groups, started=nil)
-        configuration = runner.configuration
-        requested = started ? started.worker_count : configuration.parallel_preload? && requested_worker_count(configuration)
+      # @return [Coordinator, nil] a coordinator for the loaded groups, its
+      #   workers to be forked once it runs, or `nil` when the run should
+      #   proceed serially (not requested, not possible or not worth it).
+      #   Warns when a requested parallel run is not possible. See {Plan} for
+      #   workers forked before loading.
+      def self.coordinator_for(runner, example_groups)
+        requested = requested_worker_count(runner.configuration)
         return nil unless requested
 
-        units = units_for(example_groups, configuration)
+        units = units_for(example_groups, runner.configuration)
         count = [requested, units.size].min
-        if count < 2
-          started&.dismiss
-          return nil
-        end
-
-        (started || Coordinator.new(runner, count)).tap { |coordinator| coordinator.assign(example_groups, units) }
-      end
-
-      # Forks the workers before the spec files are loaded when they are to
-      # load the spec files themselves (`config.parallel_preload = false`).
-      # There is no point in more workers than spec files to load.
-      # @return [Coordinator, nil] the coordinator of the forked workers
-      def self.coordinator_before_loading(runner)
-        configuration = runner.configuration
-        return nil if configuration.parallel_preload?
-
-        requested = requested_worker_count(configuration)
-        return nil unless requested
-
-        count = [requested, configuration.files_to_run.uniq.size].min
         return nil if count < 2
 
-        Coordinator.new(runner, count).tap(&:start)
+        Coordinator.new(runner, count).tap { |coordinator| coordinator.assign(example_groups, units) }
       end
 
-      # A fingerprint of the examples a process loaded -- ids, locations and
-      # descriptions of those that will run, in load order -- so that a worker
+      # Fingerprints of the examples a process loaded -- ids and locations of
+      # those that will run, in load order -- per spec file, so that a worker
       # that loaded the spec files itself is used only if it loaded the same
-      # examples as the coordinating process.
-      # @return [String]
+      # examples as the coordinating process, and otherwise the files that
+      # differ can be named. Descriptions are left out: results are reported
+      # on the coordinating process's examples, so one computed at load time
+      # (from the time, a temporary file's path, ...) is simply its own.
+      # @return [Hash{String => String}] by the file of the top-level group
       def self.suite_digest(world)
         require 'digest/sha2'
-        digest = Digest::SHA256.new
+        digests = Hash.new { |hash, file| hash[file] = Digest::SHA256.new }
         world.example_groups.each do |group|
-          group.descendant_filtered_examples.each do |example|
-            digest << example.id << "\0" << example.location << "\0" << example.full_description << "\n"
-          end
+          digest = digests[group.metadata[:file_path]]
+          group.descendant_filtered_examples.each { |example| digest << example.id << "\0" << example.location << "\n" }
         end
-        digest.hexdigest
+        digests.transform_values(&:hexdigest)
       end
 
       # @private
