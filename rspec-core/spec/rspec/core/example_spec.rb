@@ -984,7 +984,8 @@ RSpec.describe RSpec::Core::Example, :parent_metadata => 'sample' do
       example.assign_execution_result(
         :status => :failed, :started_at => started_at, :finished_at => finished_at, :run_time => 1.0,
         :pending_message => nil, :pending_fixed => false, :exception => error, :pending_exception => nil,
-        :pending => nil, :skip => true, :extra_failure_lines => ["more"]
+        :pending => nil, :skip => true, :extra_failure_lines => ["more"],
+        :description => "is expected to fail", :full_description => "group is expected to fail"
       )
 
       expect(example.execution_result).to have_attributes(
@@ -993,6 +994,7 @@ RSpec.describe RSpec::Core::Example, :parent_metadata => 'sample' do
       )
       expect(example.exception).to be(error)
       expect(example.metadata).to include(:pending => "declared", :skip => true, :extra_failure_lines => ["more"])
+      expect(example).to have_attributes(:description => "is expected to fail", :full_description => "group is expected to fail")
       expect(RSpec::Core::Notifications::ExampleNotification.for(example)).to be_a(RSpec::Core::Notifications::FailedExampleNotification)
     end
 

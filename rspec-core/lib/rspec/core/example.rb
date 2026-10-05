@@ -457,7 +457,7 @@ module RSpec
         result.pending_exception = attributes[:pending_exception]
         result.exception = @exception = attributes[:exception]
 
-        [:pending, :skip, :extra_failure_lines].each do |key|
+        [:description, :full_description, :pending, :skip, :extra_failure_lines].each do |key|
           metadata[key] = attributes[key] unless attributes[key].nil?
         end
       end

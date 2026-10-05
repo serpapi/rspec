@@ -150,7 +150,7 @@ module RSpec
           kind, *rest = message
           number = worker.number
           case kind
-          when :group_started    then index.with_group(rest[0]) { |g| @sequencer.group_started(number, g, bytes) }
+          when :group_started    then index.with_group(rest[0]) { |g| group_started(number, g, rest[1], bytes) }
           when :group_finished   then index.with_group(rest[0]) { |g| @sequencer.group_finished(number, g, rest[1], bytes) }
           when :example_started  then index.with_example(rest[0]) { |e| example_started(worker, e, bytes) }
           when :example_finished then example_finished(worker, rest[0], rest[1], bytes)
@@ -173,6 +173,12 @@ module RSpec
 
         def non_example_failure(payload, context_description)
           @configuration.reporter.notify_non_example_exception(RemoteException.rebuild(payload), context_description)
+        end
+
+        # Described as the worker that runs it described it.
+        def group_started(number, group, descriptions, bytes)
+          group.metadata.update(descriptions) if descriptions
+          @sequencer.group_started(number, group, bytes)
         end
 
         def example_started(worker, example, bytes)

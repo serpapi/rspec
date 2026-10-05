@@ -50,6 +50,15 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
         3.times { |i| it(\"passes \#{i}\") { expect(i).to be >= 0 } }
       end
     "
+
+    # Described by their matchers once they have run.
+    write_file_formatted 'spec/delta_spec.rb', "
+      RSpec.describe 'Delta' do
+        subject { 5 }
+        it { is_expected.to eq(5) }
+        it { is_expected.to eq(6) }
+      end
+    "
   end
 
   # Timing differs between runs, and failures are numbered in the order they
@@ -77,8 +86,9 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     run_rspec "--parallel=2 --order defined"
 
     expect(last_cmd_exit_status).to eq(1)
-    expect(last_cmd_stdout).to include("11 examples, 4 failures, 2 pending")
-    expect(last_cmd_stdout).to include("Alpha fails", "Alpha nested fails with a cause", "Beta aggregates", "Beta fails in an after hook")
+    expect(last_cmd_stdout).to include("13 examples, 5 failures, 2 pending")
+    expect(last_cmd_stdout).to include("Alpha fails", "Alpha nested fails with a cause", "Beta aggregates", "Beta fails in an after hook",
+                                       "rspec ./spec/delta_spec.rb:4 # Delta is expected to eq 6")
     expect(last_cmd_stdout).to include("Got 2 failures:", "--- Caused by: ---", "root")
     expect(last_cmd_stdout.scan("Randomized with seed").size).to eq(0)
     expect(last_cmd_stderr).to eq("")
@@ -202,7 +212,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
         expect(parallel.scan(/class="example (\w+)"/).sort).to eq(serial.scan(/class="example (\w+)"/).sort)
         expect(parallel.scan(/<dl[^>]*>/).size).to eq(serial.scan(/<dl[^>]*>/).size)
         expect(parallel.scan('<span class="duration">').size).to eq(serial.scan('<span class="duration">').size)
-        expect(parallel).to include("11 examples, 4 failures, 2 pending")
+        expect(parallel).to include("13 examples, 5 failures, 2 pending")
       end
     end
 
@@ -314,18 +324,18 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
     RSpec.configuration.example_status_persistence_file_path = 'statuses.txt'
     run_rspec "--order defined --parallel=2"
-    expect(last_cmd_stdout).to include("11 examples, 4 failures, 2 pending")
+    expect(last_cmd_stdout).to include("13 examples, 5 failures, 2 pending")
     cd '.' do
       statuses = File.read("statuses.txt")
-      expect(statuses.scan('| passed ').size).to eq(5)
-      expect(statuses.scan('| failed ').size).to eq(4)
+      expect(statuses.scan('| passed ').size).to eq(6)
+      expect(statuses.scan('| failed ').size).to eq(5)
       expect(statuses.scan('| pending').size).to eq(2)
       expect(statuses).to match(/\d+\.\d+ seconds/)
     end
 
     RSpec.configuration.example_status_persistence_file_path = 'statuses.txt'
     run_rspec "--order defined --parallel=2 --only-failures"
-    expect(last_cmd_stdout).to include("4 examples, 4 failures")
+    expect(last_cmd_stdout).to include("5 examples, 5 failures")
   end
 
   it 'forwards deprecations and messages from the workers into the single report' do
@@ -732,6 +742,25 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
       expect(last_cmd_stdout).to include("2 examples, 0 failures")
       expect(last_cmd_stderr).to include("`config.parallel_workers` was set while they were loading")
+    end
+
+    it 'reports the groups and examples as the worker that ran them described them' do
+      write_file_formatted 'spec/pid_spec.rb', "
+        2.times do |i|
+          RSpec.describe(\"G\#{i} loaded in \#{Process.pid}\") do
+            it(\"ran in \#{Process.pid}\") { File.write(\"ran_\#{Process.pid}\", '') }
+          end
+        end
+      "
+
+      run_rspec '--parallel=2 --no-parallel-preload --format documentation'
+
+      expect(last_cmd_stdout).to include("2 examples, 0 failures")
+      described = last_cmd_stdout.scan(/(?:loaded|ran) in (\d+)/).flatten.uniq
+      ran = cd('.') { Dir['ran_*'].map { |file| file.delete_prefix('ran_') } }
+      expect(described).not_to be_empty
+      expect(described).to all(satisfy { |pid| ran.include?(pid) })
+      expect(described).not_to include(Process.pid.to_s)
     end
 
     it 'runs the groups of a single spec file across the workers' do

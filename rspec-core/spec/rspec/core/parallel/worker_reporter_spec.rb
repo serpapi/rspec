@@ -39,8 +39,8 @@ module RSpec::Core::Parallel
         :group_finished
       ])
 
-      expect(kinds[0]).to eq([:group_started, group.id])
-      expect(kinds[9]).to eq([:group_started, inner.id])
+      expect(kinds[0]).to eq([:group_started, group.id, { :description => "Outer", :full_description => "Outer" }])
+      expect(kinds[9]).to eq([:group_started, inner.id, { :description => "Inner", :full_description => "Outer Inner" }])
       expect(kinds[12]).to eq([:group_finished, inner.id, nil])
       expect(kinds[13][0..1]).to eq([:group_finished, group.id])
       expect(kinds[13][2]).to be_a(Float)
@@ -48,7 +48,8 @@ module RSpec::Core::Parallel
       payloads = kinds.select { |f| f.first == :example_finished }.to_h { |f| [f[1], f[2]] }
       passed, failed, pending, skipped = group.examples.map { |example| payloads.fetch(example.id) }
 
-      expect(passed).to include(:status => :passed, :exception => nil, :pending_exception => nil, :pending => nil, :skip => nil)
+      expect(passed).to include(:status => :passed, :exception => nil, :pending_exception => nil, :pending => nil, :skip => nil,
+                                :description => "passes", :full_description => "Outer passes")
       expect(passed[:started_at]).to be_a(Time)
       expect(passed[:finished_at]).to be_a(Time)
       expect(passed[:run_time]).to be_a(Float)
@@ -67,6 +68,14 @@ module RSpec::Core::Parallel
       group.run(reporter)
 
       expect(frames.select { |f| f.first == :example_started }).to eq([[:example_started, group.examples.first.id]])
+    end
+
+    it "ships the description a one-liner's matcher generated while it ran" do
+      group = RSpec.describe("G") { it { expect(1).to eq(1) } }
+      group.run(reporter)
+
+      payload = frames.find { |f| f.first == :example_finished }.last
+      expect(payload).to include(:description => "is expected to eq 1", :full_description => "G is expected to eq 1")
     end
 
     it "forwards extra failure lines and stringifies result parts that cannot be marshaled" do
