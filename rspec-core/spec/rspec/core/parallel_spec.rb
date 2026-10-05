@@ -196,6 +196,27 @@ module RSpec::Core
       end
     end
 
+    describe ".time_to_wire and .time_from_wire" do
+      it "carry a local Time as integers and rebuild one equal to it, to the nanosecond" do
+        time = ::Time.at(1_791_231_154, 100_773_123, :nsec)
+
+        wire = Parallel.time_to_wire(time)
+        rebuilt = Parallel.time_from_wire(Marshal.load(Marshal.dump(wire)))
+
+        expect(wire).to eq([1_791_231_154, 100_773_123])
+        expect(rebuilt).to eq(time)
+        expect([rebuilt.nsec, rebuilt.utc_offset]).to eq([time.nsec, time.utc_offset])
+      end
+
+      it "leave nil, and values that are not on the wire, as they are" do
+        time = ::Time.now
+
+        expect(Parallel.time_to_wire(nil)).to be_nil
+        expect(Parallel.time_from_wire(nil)).to be_nil
+        expect(Parallel.time_from_wire(time)).to be(time)
+      end
+    end
+
     describe "signal handling", :skip => (Signal.list.key?("HUP") ? false : "needs SIGHUP") do
       around do |example|
         original = trap("HUP", "DEFAULT")

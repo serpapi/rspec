@@ -32,6 +32,18 @@ module RSpec::Core::Parallel
       expect(reader.drain.map(&:first)).to eq([0, 1, 2])
     end
 
+    it "keeps a partial frame that follows whole ones, and reports each frame's own size" do
+      packets = [:first, "second" * 100, :third].map { |message| Marshal.dump(message) }
+      frames = packets.map { |packet| "#{packet.bytesize}\n#{packet}" }
+      writer.io.write(frames[0] + frames[1] + frames[2][0, 5])
+
+      expect(reader.drain).to eq([[:first, frames[0].bytesize], ["second" * 100, frames[1].bytesize]])
+
+      writer.io.write(frames[2][5..-1])
+      expect(reader.drain).to eq([[:third, frames[2].bytesize]])
+      expect(reader.bytes_read).to eq(frames.sum(&:bytesize))
+    end
+
     it "keeps a partial frame buffered without blocking until the rest arrives" do
       packet = Marshal.dump(:whole)
       writer.io.write("#{packet.bytesize}\n#{packet[0, 3]}")

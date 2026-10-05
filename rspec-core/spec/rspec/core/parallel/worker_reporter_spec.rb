@@ -50,8 +50,9 @@ module RSpec::Core::Parallel
 
       expect(passed).to include(:status => :passed, :exception => nil, :pending_exception => nil, :pending => nil, :skip => nil,
                                 :description => "passes", :full_description => "Outer passes")
-      expect(passed[:started_at]).to be_a(Time)
-      expect(passed[:finished_at]).to be_a(Time)
+      expect(passed[:started_at]).to eq([group.examples.first.execution_result.started_at.tv_sec,
+                                         group.examples.first.execution_result.started_at.tv_nsec])
+      expect(passed[:finished_at]).to all(be_an(Integer))
       expect(passed[:run_time]).to be_a(Float)
 
       expect(failed[:status]).to eq(:failed)

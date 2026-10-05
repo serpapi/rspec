@@ -247,7 +247,9 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
         end
 
         def example_passed(notification)
-          @output.puts \"\#{'  ' * @depth}ok \#{notification.example.metadata[:flag].inspect}\"
+          result = notification.example.execution_result
+          timed = result.started_at.is_a?(Time) && result.finished_at.is_a?(Time) && result.finished_at >= result.started_at
+          @output.puts \"\#{'  ' * @depth}ok \#{notification.example.metadata[:flag].inspect} timed=\#{timed}\"
         end
 
         def example_failed(notification)
@@ -282,12 +284,12 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
     expect(last_cmd_stdout).to include(
       "> One (unit)",
-      "  ok 7",
+      "  ok 7 timed=true",
       "  FAILED MyAppError app_error=true std=true msg=app broke",
       "Failure/Error: it('raises an app error') { raise MyAppError, 'app broke' }",
       "< One",
       "> Two (feature)",
-      "  ok nil",
+      "  ok nil timed=true",
       "< Two",
       "custom: #{{ :from => 'worker' }.inspect}",
       "message: Parallel worker 1 could not forward the custom `my_event` notification because its options cannot be " \

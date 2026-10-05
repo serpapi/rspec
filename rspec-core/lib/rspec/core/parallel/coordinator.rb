@@ -14,6 +14,10 @@ module RSpec
         include WorkerLifecycle
 
         TICK = 0.25
+        # Between checks for workers that exited without closing their
+        # results pipe (a child of theirs holds it open, say); one whose pipe
+        # closed is checked for at once.
+        REAP_INTERVAL = 0.05
         TERM_GRACE = 5.0
         KILL_GRACE = 5.0
         # Added to the shutdown timeout on the coordinator's side so that the
@@ -44,6 +48,8 @@ module RSpec
           @termination_signal = nil
           @signal_handlers = {}
           @started_at = nil
+          @reap_due = true
+          @next_reap_at = 0.0
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -94,7 +100,7 @@ module RSpec
             return stop_for_signal if @termination_signal
 
             wait_for_results
-            reap_workers
+            reap_workers_when_due
             request_quit if @world.wants_to_quit && !@quitting
             dispatch_work
             enforce_deadlines
@@ -117,6 +123,7 @@ module RSpec
             # Each worker left is exiting (its results pipe is at its end) or
             # was given up on: all there is to do is reap it or enforce its
             # deadline, and an exiting worker is reapable within moments.
+            @reap_due = true
             sleep [@tick, 0.01].min
             return
           end
@@ -133,9 +140,12 @@ module RSpec
           messages = drain(worker)
           messages.each { |message, bytes| handle_message(worker, message, bytes) }
 
+          return unless worker.results.eof?
+
           # A worker whose results pipe closed while it was still running is
           # either about to be reaped or wedged; bound the wait for it.
-          worker.deadline ||= now + @configuration.parallel_shutdown_timeout + @watchdog_grace if worker.results.eof?
+          @reap_due = true
+          worker.deadline ||= now + @configuration.parallel_shutdown_timeout + @watchdog_grace
         end
 
         def drain(worker)
@@ -287,6 +297,17 @@ module RSpec
         rescue Errno::EPIPE, IOError
           worker.deadline ||= now + @configuration.parallel_shutdown_timeout + @watchdog_grace
           false
+        end
+
+        # `waitpid` for every worker on every wake-up of the loop -- once per
+        # few frames when results stream in -- cost the coordinator a sixth of
+        # its time on a large suite.
+        def reap_workers_when_due
+          return unless @reap_due || now >= @next_reap_at
+
+          @reap_due = false
+          @next_reap_at = now + REAP_INTERVAL
+          reap_workers
         end
 
         def reap_workers

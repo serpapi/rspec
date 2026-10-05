@@ -114,8 +114,8 @@ module RSpec
 
           {
             :status              => result.status,
-            :started_at          => result.started_at,
-            :finished_at         => result.finished_at,
+            :started_at          => Parallel.time_to_wire(result.started_at),
+            :finished_at         => Parallel.time_to_wire(result.finished_at),
             :run_time            => result.run_time,
             :pending_message     => Parallel.marshal_safe(result.pending_message, &:to_s),
             :pending_fixed       => result.pending_fixed,

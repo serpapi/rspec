@@ -138,6 +138,20 @@ module RSpec
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
+      # A `Time` as whole seconds and nanoseconds, the way workers send it:
+      # marshaling a local `Time` asks libc for its UTC offset, and in a
+      # process forked on macOS each such call reloads the time zone file
+      # (tens of microseconds, twice per example).
+      # @private
+      def self.time_to_wire(time)
+        time && [time.tv_sec, time.tv_nsec]
+      end
+
+      # @private
+      def self.time_from_wire(value)
+        value.is_a?(Array) ? ::Time.at(value[0], value[1], :nsec) : value
+      end
+
       # Whatever the formatters wrote before `start` (seed, run options) may
       # still be buffered in streams that are not `$stdout`; forked workers
       # would write it again when they exit.

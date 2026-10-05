@@ -53,6 +53,7 @@ module RSpec
             @io = io
             @io.set_encoding ENCODING
             @buffer = String.new(:encoding => ENCODING)
+            @offset = 0
             @pending = []
             @eof = false
             @bytes_read = 0
@@ -108,6 +109,7 @@ module RSpec
           # Reads what the kernel has buffered, a bounded number of chunks at a
           # time so that one chatty worker cannot monopolize the coordinator.
           def read_available
+            compact
             16.times do
               break if @eof
 
@@ -122,18 +124,29 @@ module RSpec
             end
           end
 
+          # Drops the frames already taken from the buffer: once per read
+          # rather than once per frame, which would copy the rest of up to a
+          # megabyte of buffered frames for each one.
+          def compact
+            return if @offset.zero?
+
+            @buffer = @buffer.byteslice(@offset, @buffer.bytesize - @offset)
+            @offset = 0
+          end
+
           # rubocop:disable-next Security/MarshalLoad
           def next_frame
-            newline = @buffer.index("\n")
+            newline = @buffer.index("\n", @offset)
             return nil unless newline
 
-            size = frame_size(@buffer.byteslice(0, newline))
+            size = frame_size(@buffer.byteslice(@offset, newline - @offset))
             frame_end = newline + 1 + size
             return nil if @buffer.bytesize < frame_end
 
             packet = @buffer.byteslice(newline + 1, size)
-            @buffer = @buffer.byteslice(frame_end, @buffer.bytesize - frame_end)
-            [Marshal.load(packet), frame_end]
+            consumed = frame_end - @offset
+            @offset = frame_end
+            [Marshal.load(packet), consumed]
           end
 
           def frame_size(header)

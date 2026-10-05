@@ -25,6 +25,8 @@ module RSpec
 
           example.assign_execution_result(
             payload.merge(
+              :started_at        => Parallel.time_from_wire(payload[:started_at]),
+              :finished_at       => Parallel.time_from_wire(payload[:finished_at]),
               :exception         => RemoteException.rebuild(payload[:exception]),
               :pending_exception => RemoteException.rebuild(payload[:pending_exception])
             )

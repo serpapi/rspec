@@ -13,7 +13,7 @@ module RSpec::Core::Parallel
       end
     end
 
-    attr_reader :signals, :warmups
+    attr_reader :signals, :warmups, :waits
 
     def threads
       @threads.values
@@ -25,6 +25,7 @@ module RSpec::Core::Parallel
       @signals = []
       @survives = survives
       @warmups = 0
+      @waits = 0
       @next_pid = 40_000
     end
 
@@ -40,6 +41,7 @@ module RSpec::Core::Parallel
     end
 
     def waitpid2(pid, _flags)
+      @waits += 1
       thread = @threads.fetch(pid)
       return nil if thread.alive?
 
@@ -188,6 +190,17 @@ module RSpec::Core::Parallel
 
     def messages
       output.string
+    end
+
+    it "checks for exited workers a bounded number of times while results stream in, not on every wake-up" do
+      groups = %w[A B].map { |name| RSpec.describe(name) { 400.times { |i| it("passes #{i}") {} } } }
+      started = RSpec::Core::Parallel.monotonic_time
+
+      expect(coordinator(groups).run).to eq(0)
+
+      elapsed = RSpec::Core::Parallel.monotonic_time - started
+      expect(messages).to include("800 examples, 0 failures")
+      expect(process.waits).to be <= 2 * ((elapsed / Coordinator::REAP_INTERVAL).ceil + 6)
     end
 
     it "runs every group across the workers, reports through the configured formatters and exits 0 when all pass" do
