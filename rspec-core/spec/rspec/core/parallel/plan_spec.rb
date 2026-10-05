@@ -3,7 +3,7 @@ module RSpec::Core
     let(:config) { RSpec.configuration }
     let(:runner) { Runner.new(ConfigurationOptions.new([]), config, RSpec.world) }
     let(:plan) { Parallel::Plan.new(runner) }
-    let(:started) { instance_double(Parallel::Coordinator, :start => nil, :assign => nil, :dismiss => nil) }
+    let(:started) { instance_double(Parallel::Coordinator, :start => nil, :started? => true, :assign => nil, :dismiss => nil) }
 
     around { |example| without_env_vars("TEST_ENV_NUMBER", &example) }
 
@@ -58,15 +58,26 @@ module RSpec::Core
         plan.before_loading
       end
 
-      it "dismisses the workers it forked when a later fork fails" do
+      it "dismisses the workers it forked when starting the others fails unexpectedly" do
         config.parallel_workers = 2
         failing = instance_double(Parallel::Coordinator, :dismiss => nil)
-        allow(failing).to receive(:start).and_raise(Errno::EAGAIN)
+        allow(failing).to receive(:start).and_raise(RuntimeError, "unexpected")
         allow(Parallel::Coordinator).to receive(:new).and_return(failing)
 
-        expect { plan.before_loading }.to raise_error(Errno::EAGAIN)
+        expect { plan.before_loading }.to raise_error(RuntimeError, "unexpected")
         plan.dismiss
         expect(failing).to have_received(:dismiss)
+      end
+
+      it "runs serially when no worker could be started" do
+        config.parallel_workers = 2
+        allow(Parallel::Coordinator).to receive(:new).and_return(started)
+        allow(started).to receive(:started?).and_return(false)
+
+        plan.before_loading
+
+        expect(plan.coordinator_for(groups(3))).to be_nil
+        expect(started).not_to have_received(:assign)
       end
 
       it "dismisses them, and runs serially, when fewer than two groups are to run" do
@@ -110,7 +121,7 @@ module RSpec::Core
         expect(RSpec).to receive(:warning).with(a_string_including(
           "Ignoring `--parallel`: `config.parallel_workers` was set while the spec files were loading, too late to fork " \
           "the workers before them as `config.parallel_preload = false` asks."
-        ).and(ending_with("Running serially.")), :call_site => nil)
+        ).and(ending_with("Running serially")), :call_site => nil)
         expect(Parallel::Coordinator).not_to receive(:new)
 
         expect(plan.coordinator_for(groups(3))).to be_nil

@@ -200,7 +200,7 @@ module RSpec::Core::Parallel
 
       elapsed = RSpec::Core::Parallel.monotonic_time - started
       expect(messages).to include("800 examples, 0 failures")
-      expect(process.waits).to be <= 2 * ((elapsed / Coordinator::REAP_INTERVAL).ceil + 6)
+      expect(process.waits).to be <= 2 * ((elapsed / WorkerLifecycle::REAP_INTERVAL).ceil + 6)
     end
 
     it "runs every group across the workers, reports through the configured formatters and exits 0 when all pass" do
@@ -566,7 +566,7 @@ module RSpec::Core::Parallel
         survivor.threads.each(&:kill)
       end
 
-      it "dismisses the workers it forked when a later fork fails, and does not wait for those it never forked" do
+      it "goes on with the workers it could fork when a later fork fails, and dismisses only those" do
         worker_behaviours[1] = :never_loads
         fork_fails = lambda do |handle, handles|
           raise Errno::EAGAIN, "fork(2)" if handle.number == 2
@@ -574,8 +574,12 @@ module RSpec::Core::Parallel
           spawn(handle, handles)
         end
         instance = new_coordinator([passing_group("A")], 3, :spawn => fork_fails)
+        expect(RSpec).to receive(:warning).with("Started 1 of 3 parallel workers: the next could not be started " \
+                                                "(Errno::EAGAIN: Resource temporarily unavailable - fork(2)). Going on without it",
+                                                :call_site => nil)
 
-        expect { instance.start }.to raise_error(Errno::EAGAIN)
+        instance.start
+        expect(instance).to be_started
         started = RSpec::Core::Parallel.monotonic_time
         instance.dismiss
 
@@ -584,6 +588,20 @@ module RSpec::Core::Parallel
         expect(messages).not_to include("survived SIGKILL")
         expect(RSpec::Core::Parallel.monotonic_time - started).to be < 4
       end
+    end
+
+    it "moves its workers' deadlines back by the time its loop was paused beyond its own waits" do
+      instance = coordinator([passing_group("A")])
+      worker = RSpec::Core::Parallel::WorkerHandle.new(1)
+      worker.deadline = 50.0
+      instance.instance_variable_get(:@workers) << worker
+      allow(instance).to receive(:now).and_return(10.0, 10.2, 30.2)
+
+      3.times { instance.send(:account_for_pauses) }
+
+      expect(worker.deadline).to be_within(0.001).of(50.0 + 20.0 - 0.01 - RSpec::Core::Parallel::PAUSE_TOLERANCE)
+    ensure
+      worker&.close_all
     end
 
     it "terminates a worker that sends data it cannot decode" do
@@ -674,15 +692,36 @@ module RSpec::Core::Parallel
       expect(file_output.string).to include("2 examples, 0 failures")
     end
 
-    it "copes with workers that could not be spawned when the coordinator fails" do
+    it "runs every group in the workers it could start when the system refuses more" do
       failing_spawn = lambda do |handle, handles|
-        raise Errno::EAGAIN, "fork" if handle.number == 2
+        raise Errno::EMFILE if handle.number > 1
 
         spawn(handle, handles)
       end
+      expect(RSpec).to receive(:warning).with(a_string_starting_with("Started 1 of 3 parallel workers: the next could not " \
+                                                                     "be started (Errno::EMFILE: Too many open files)"),
+                                              :call_site => nil)
 
-      expect { coordinator([passing_group("A"), passing_group("B")], 2, :spawn => failing_spawn).run }.to raise_error(Errno::EAGAIN)
-      expect(process.signals.map(&:first)).to eq(["TERM"])
+      exit_code = coordinator(%w[A B C].map { |name| passing_group(name) }, 3, :spawn => failing_spawn).run
+
+      expect(exit_code).to eq(0)
+      expect(messages).to include("3 examples, 0 failures")
+      expect(process.signals).to be_empty
+    end
+
+    it "runs the groups in this process, like a serial run, when it cannot start any worker" do
+      ran_in = []
+      groups = %w[A B].map { |name| RSpec.describe(name) { it("records its process") { ran_in << Process.pid } } }
+      config.before(:suite) { ran_in << :before_suite }
+      expect(RSpec).to receive(:warning).with(a_string_including("Started 0 of 2 parallel workers").and(ending_with("Running serially")),
+                                              :call_site => nil)
+
+      exit_code = coordinator(groups, 2, :spawn => lambda { |*| raise Errno::EAGAIN, "fork" }).run
+
+      expect(exit_code).to eq(0)
+      expect(ran_in).to eq([:before_suite, Process.pid, Process.pid])
+      expect(messages).to include("2 examples, 0 failures")
+      expect(Signal.trap("TERM", "DEFAULT")).not_to be_a(Proc)
     end
 
     it "treats a non-example failure reported by a worker as one of the run" do

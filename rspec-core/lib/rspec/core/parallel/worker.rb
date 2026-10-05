@@ -157,8 +157,12 @@ module RSpec
         def arm_watchdog
           timeout = @configuration.parallel_shutdown_timeout
           thread = Thread.new do
-            sleep timeout
-            dump_threads(timeout)
+            Parallel.sleep_running(timeout)
+            begin
+              dump_threads(timeout)
+            rescue IOError, SystemCallError
+              nil # stderr was closed or replaced; aborting matters more than the dump
+            end
             @exit_now.call(1)
           end
           thread.report_on_exception = false

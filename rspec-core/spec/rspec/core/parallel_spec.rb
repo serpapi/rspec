@@ -196,6 +196,37 @@ module RSpec::Core
       end
     end
 
+    describe ".sleep_running" do
+      it "sleeps until the process has run that long, counting a slice it was paused through as the slice" do
+        clock = 100.0
+        slices = []
+        allow(Parallel).to receive(:monotonic_time) { clock }
+        allow(Parallel).to receive(:sleep) do |seconds|
+          slices << seconds
+          clock += slices.size == 2 ? 30.0 : seconds
+        end
+
+        Parallel.sleep_running(1.0, 0.25)
+
+        expect(slices).to eq([0.25, 0.25, 0.25, 0.25])
+        expect(clock).to eq(100.0 + 0.75 + 30.0)
+      end
+
+      it "counts a slice that merely ran late, within the pause tolerance, as the time it took" do
+        clock = 0.0
+        slices = []
+        allow(Parallel).to receive(:monotonic_time) { clock }
+        allow(Parallel).to receive(:sleep) do |seconds|
+          slices << seconds
+          clock += seconds + 0.5
+        end
+
+        Parallel.sleep_running(1.0, 0.25)
+
+        expect(slices).to eq([0.25, 0.25])
+      end
+    end
+
     describe ".time_to_wire and .time_from_wire" do
       it "carry a local Time as integers and rebuild one equal to it, to the nanosecond" do
         time = ::Time.at(1_791_231_154, 100_773_123, :nsec)

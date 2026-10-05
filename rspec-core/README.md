@@ -379,14 +379,24 @@ one that cannot tear down -- before the process ends the way a serial run
 would, and the output says which example each worker was running and for how
 long, which is usually why the run had to be stopped; a signal the run was
 started ignoring (`nohup`), or that your suite installs a handler for, is left
-alone.
+alone. Time the whole run spends stopped (Ctrl-Z) or the machine asleep does
+not count towards these timeouts.
 
 `--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
 already set because another tool is running RSpec in parallel, RSpec prints a
-warning and runs serially. `--bisect` and `--dry-run` always run serially, and
-the reproduction command `--bisect` prints includes `--no-parallel`, which (like
-`--parallel=0`) overrides `--parallel` in `.rspec` and `config.parallel_workers`
-in a helper, and leaves `--parallel` out of its `SPEC_OPTS`.
+warning and runs serially. When the system refuses a worker -- too many open
+files or processes -- the run goes on with the workers it got, and serially if
+it got none, with a warning. `--bisect` and `--dry-run` always run serially,
+and the reproduction command `--bisect` prints includes `--no-parallel`, which
+(like `--parallel=0`) overrides `--parallel` in `.rspec` and
+`config.parallel_workers` in a helper, and leaves `--parallel` out of its
+`SPEC_OPTS`.
+
+Each worker is a separate process, so a coverage tool records only the
+coordinating process unless it merges forked processes. With SimpleCov, set
+`merge_subprocesses true` in the `SimpleCov.start` block (SimpleCov 1.3; it
+was `enable_for_subprocesses` before): rspec-core's own suite then measures
+the same coverage with `--parallel=8`, preloaded or not, as it does serially.
 
 ## Store Command Line Options `.rspec`
 

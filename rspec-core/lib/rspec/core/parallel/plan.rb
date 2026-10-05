@@ -33,6 +33,7 @@ module RSpec
           # are dismissed too.
           @coordinator = Coordinator.new(@runner, count)
           @coordinator.start
+          @coordinator = nil unless @coordinator.started?
         end
 
         # @return [Coordinator, nil] the coordinator to run the loaded groups,
@@ -82,7 +83,7 @@ module RSpec
           what = @postponed_by || '`config.parallel_preload = false`'
           RSpec.warning "Ignoring `--parallel`: #{what} was set while the spec files were loading, too late to fork " \
                         "the workers before them as `config.parallel_preload = false` asks. Set it before they " \
-                        "load: on the command line, in `.rspec` or in a `--require`d file. Running serially.",
+                        "load: on the command line, in `.rspec` or in a `--require`d file. Running serially",
                         :call_site => nil
         end
       end

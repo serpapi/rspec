@@ -292,6 +292,15 @@ module RSpec::Core::Parallel
       ensure
         blocked&.kill
       end
+
+      it "still aborts the process when an example closed the stream it would dump the threads to" do
+        RSpec.configuration.parallel_shutdown_timeout = 0.05
+        stderr.close
+
+        worker(4).arm_watchdog.join
+
+        expect(exits).to eq([[:exit_now, 1]])
+      end
     end
   end
 end

@@ -67,13 +67,13 @@ module RSpec
 
         unless RSpec::Support::RubyFeatures.fork_supported?
           RSpec.warning "Ignoring `--parallel`: it needs `fork`, which is not available on #{RUBY_ENGINE} " \
-                        "(#{RUBY_PLATFORM}). Running serially.", :call_site => nil
+                        "(#{RUBY_PLATFORM}). Running serially", :call_site => nil
           return nil
         end
 
         if ENV.key?('TEST_ENV_NUMBER')
           RSpec.warning "Ignoring `--parallel`: this process is already a worker of a parallel test run " \
-                        "(TEST_ENV_NUMBER is set). Running serially.", :call_site => nil
+                        "(TEST_ENV_NUMBER is set). Running serially", :call_site => nil
           return nil
         end
 
@@ -136,6 +136,25 @@ module RSpec
       # @private
       def self.monotonic_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # Longer than any wait of the coordinator's loop or of a worker's
+      # watchdog: a longer gap means the process was not running -- stopped
+      # with the whole run (Ctrl-Z), the machine asleep -- and that time does
+      # not count towards a deadline.
+      PAUSE_TOLERANCE = 1.0
+
+      # Sleeps until this process has been running for `seconds`.
+      # @private
+      def self.sleep_running(seconds, slice=0.25)
+        remaining = seconds
+        while remaining > 0
+          step = [remaining, slice].min
+          started = monotonic_time
+          sleep step
+          elapsed = monotonic_time - started
+          remaining -= elapsed > step + PAUSE_TOLERANCE ? step : elapsed
+        end
       end
 
       # A `Time` as whole seconds and nanoseconds, the way workers send it:

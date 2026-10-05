@@ -14,10 +14,6 @@ module RSpec
         include WorkerLifecycle
 
         TICK = 0.25
-        # Between checks for workers that exited without closing their
-        # results pipe (a child of theirs holds it open, say); one whose pipe
-        # closed is checked for at once.
-        REAP_INTERVAL = 0.05
         TERM_GRACE = 5.0
         KILL_GRACE = 5.0
         # Added to the shutdown timeout on the coordinator's side so that the
@@ -50,6 +46,7 @@ module RSpec
           @started_at = nil
           @reap_due = true
           @next_reap_at = 0.0
+          @last_turn_at = nil
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -66,12 +63,15 @@ module RSpec
         def run
           reporter = @configuration.reporter
           @signal_handlers = Parallel.trap_signals(TERMINATION_SIGNALS) { |signal| @termination_signal ||= signal }
+          loading = !@workers.empty?
+          start_workers(@units) unless loading
+          return run_serially if @workers.empty?
 
           passed = reporter.report(@world.example_count(@example_groups)) do
             @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
 
             begin
-              @workers.empty? ? start_workers(@units) : expect_loading_workers
+              expect_loading_workers if loading
               event_loop
             ensure
               terminate_remaining_workers
@@ -88,10 +88,18 @@ module RSpec
 
           @runner.exit_code(passed)
         ensure
+          terminate_remaining_workers
           Parallel.restore_signals(@signal_handlers)
         end
 
       private
+
+        # No worker could be started at all.
+        def run_serially
+          Parallel.restore_signals(@signal_handlers)
+          @signal_handlers = {}
+          @runner.run_specs(@example_groups)
+        end
 
         def event_loop
           dispatch_work
@@ -103,6 +111,7 @@ module RSpec
             reap_workers_when_due
             request_quit if @world.wants_to_quit && !@quitting
             dispatch_work
+            account_for_pauses
             enforce_deadlines
             @sequencer.tick
           end
@@ -297,17 +306,6 @@ module RSpec
         rescue Errno::EPIPE, IOError
           worker.deadline ||= now + @configuration.parallel_shutdown_timeout + @watchdog_grace
           false
-        end
-
-        # `waitpid` for every worker on every wake-up of the loop -- once per
-        # few frames when results stream in -- cost the coordinator a sixth of
-        # its time on a large suite.
-        def reap_workers_when_due
-          return unless @reap_due || now >= @next_reap_at
-
-          @reap_due = false
-          @next_reap_at = now + REAP_INTERVAL
-          reap_workers
         end
 
         def reap_workers

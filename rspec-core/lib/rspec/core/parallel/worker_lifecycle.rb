@@ -10,11 +10,26 @@ module RSpec
       # rest within the TERM/KILL grace periods.
       # @private
       module WorkerLifecycle
+        # What the system answers when it will not give this process another
+        # worker right now: no file descriptors for its pipes, no process for
+        # it. The run goes on with the workers it has.
+        OUT_OF_RESOURCES = [Errno::EMFILE, Errno::ENFILE, Errno::EAGAIN, Errno::ENOMEM].freeze
+
+        # Between checks for workers that exited without closing their
+        # results pipe (a child of theirs holds it open, say); one whose pipe
+        # closed is checked for at once.
+        REAP_INTERVAL = 0.05
+
         # Forks the workers before the spec files are loaded; each loads them
         # itself and reports what it loaded.
         def start
           @started_at = now
           start_workers(nil)
+        end
+
+        # @return [Boolean] whether any worker could be started
+        def started?
+          !@workers.empty?
         end
 
         # Ends the workers that are not done -- workers forked before loading
@@ -27,17 +42,57 @@ module RSpec
 
       private
 
-        # Without `units` the workers load the spec files themselves.
+        # Rather than a `waitpid` for every worker on every wake-up of the
+        # loop, which comes every few frames while results stream in.
+        def reap_workers_when_due
+          return unless @reap_due || now >= @next_reap_at
+
+          @reap_due = false
+          @next_reap_at = now + REAP_INTERVAL
+          reap_workers
+        end
+
+        # Moves every deadline back by the time the coordinator's loop was not
+        # running beyond its own waits: the run was stopped (Ctrl-Z) or the
+        # machine slept, its workers with it.
+        def account_for_pauses
+          current = now
+          paused = @last_turn_at ? current - @last_turn_at - @tick - Parallel::PAUSE_TOLERANCE : 0.0
+          @last_turn_at = current
+          return unless paused > 0
+
+          @workers.each { |worker| worker.deadline += paused if worker.deadline }
+        end
+
+        # Without `units` the workers load the spec files themselves. Each
+        # worker's pipes are opened just before it is forked, so that the
+        # parent never holds more than its own ends of the earlier ones.
         def start_workers(units)
           Parallel.flush_output(@configuration)
           @process.warmup if @process.respond_to?(:warmup)
-          @worker_count.times { |index| @workers << WorkerHandle.new(index + 1) }
 
-          @workers.each do |worker|
-            worker.loading = units.nil?
-            worker.pid = @spawn.call(worker, @workers)
-            worker.close_child_ends
+          @worker_count.times do |index|
+            break unless start_worker(index + 1, units)
           end
+        end
+
+        # @return [Boolean] whether the worker started
+        def start_worker(number, units)
+          worker = WorkerHandle.new(number)
+          worker.loading = units.nil?
+          @workers << worker
+          worker.pid = @spawn.call(worker, @workers)
+          worker.close_child_ends
+          true
+        rescue *OUT_OF_RESOURCES => e
+          if worker
+            @workers.delete(worker)
+            worker.close_all
+          end
+          RSpec.warning "Started #{@workers.size} of #{@worker_count} parallel workers: the next could not be started " \
+                        "(#{e.class}: #{e.message}). #{@workers.empty? ? 'Running serially' : 'Going on without it'}",
+                        :call_site => nil
+          false
         end
 
         def fork_worker(worker, workers)

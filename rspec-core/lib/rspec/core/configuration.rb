@@ -258,7 +258,7 @@ module RSpec
           @parallel_workers = value
         else
           RSpec.warning "Cannot set `RSpec.configuration.parallel_workers` to `#{value.inspect}`; " \
-                        "it must be a positive integer, `:auto` or `nil`. Running serially."
+                        "it must be a positive integer, `:auto` or `nil`. Running serially"
           @parallel_workers = nil
         end
       end

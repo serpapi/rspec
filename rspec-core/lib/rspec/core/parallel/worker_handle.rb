@@ -13,7 +13,12 @@ module RSpec
         def initialize(number)
           @number = number
           @child_jobs, @jobs = Channel.pipe
-          @results, @child_results = Channel.pipe
+          begin
+            @results, @child_results = Channel.pipe
+          rescue SystemCallError
+            [@child_jobs, @jobs].each(&:close)
+            raise
+          end
           @state = :running
           @quit_sent = false
           @exiting = false
