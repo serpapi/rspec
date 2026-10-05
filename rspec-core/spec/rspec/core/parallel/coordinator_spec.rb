@@ -590,18 +590,48 @@ module RSpec::Core::Parallel
       end
     end
 
-    it "moves its workers' deadlines back by the time its loop was paused beyond its own waits" do
-      instance = coordinator([passing_group("A")])
-      worker = RSpec::Core::Parallel::WorkerHandle.new(1)
-      worker.deadline = 50.0
-      instance.instance_variable_get(:@workers) << worker
-      allow(instance).to receive(:now).and_return(10.0, 10.2, 30.2)
+    describe "pauses of the whole run (Ctrl-Z, a sleeping machine)" do
+      let(:clock) { [10.0] }
+      let(:instance) { coordinator([passing_group("A")]) }
+      let(:workers) { Array.new(2) { |i| RSpec::Core::Parallel::WorkerHandle.new(i + 1) } }
 
-      3.times { instance.send(:account_for_pauses) }
+      before do
+        allow(RSpec::Core::Parallel).to receive(:monotonic_time) { clock.first }
+        instance.instance_variable_get(:@workers).concat(workers)
+        instance.instance_variable_set(:@last_turn_at, clock.first)
+      end
 
-      expect(worker.deadline).to be_within(0.001).of(50.0 + 20.0 - 0.01 - RSpec::Core::Parallel::PAUSE_TOLERANCE)
-    ensure
-      worker&.close_all
+      after { workers.each(&:close_all) }
+
+      def turn(seconds)
+        clock[0] += seconds
+        instance.send(:account_for_pauses)
+      end
+
+      it "move a deadline back by the time the loop was paused beyond its own waits" do
+        workers[0].deadline = 50.0
+        turn(0.2)
+        turn(20.0)
+
+        expect(workers[0].deadline).to be_within(0.001).of(50.0 + 20.0 - 0.01 - RSpec::Core::Parallel::PAUSE_TOLERANCE)
+      end
+
+      it "leave a deadline set after the pause, in the same turn, as it is" do
+        workers[0].deadline = 50.0
+        clock[0] += 20.0
+        workers[1].deadline = 60.0
+        turn(0.1)
+
+        expect(workers[0].deadline).to be > 65.0
+        expect(workers[1].deadline).to eq(60.0)
+      end
+
+      it "leave deadlines alone in turns of normal length" do
+        workers[0].deadline = 50.0
+        5.times { turn(0.25) }
+
+        expect(workers[0].deadline).to eq(50.0)
+      end
     end
 
     it "terminates a worker that sends data it cannot decode" do

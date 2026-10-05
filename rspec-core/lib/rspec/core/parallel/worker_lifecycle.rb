@@ -52,16 +52,21 @@ module RSpec
           reap_workers
         end
 
-        # Moves every deadline back by the time the coordinator's loop was not
-        # running beyond its own waits: the run was stopped (Ctrl-Z) or the
-        # machine slept, its workers with it.
+        # Moves each deadline back by the time the coordinator's loop was not
+        # running, beyond its own waits, since the deadline was set: the run
+        # was stopped (Ctrl-Z) or the machine slept, its workers with it.
         def account_for_pauses
           current = now
-          paused = @last_turn_at ? current - @last_turn_at - @tick - Parallel::PAUSE_TOLERANCE : 0.0
+          turn_started = @last_turn_at
           @last_turn_at = current
-          return unless paused > 0
 
-          @workers.each { |worker| worker.deadline += paused if worker.deadline }
+          @workers.each do |worker|
+            next unless worker.deadline
+
+            since = [turn_started, worker.deadline_set_at].compact.max
+            paused = current - since - @tick - Parallel::PAUSE_TOLERANCE
+            worker.postpone(paused) if paused > 0
+          end
         end
 
         # Without `units` the workers load the spec files themselves. Each

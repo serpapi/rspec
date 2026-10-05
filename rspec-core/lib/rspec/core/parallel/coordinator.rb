@@ -71,6 +71,7 @@ module RSpec
             @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
 
             begin
+              @last_turn_at = now
               expect_loading_workers if loading
               event_loop
             ensure

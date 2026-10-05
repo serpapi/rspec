@@ -5,7 +5,9 @@ module RSpec
       # @private
       class WorkerHandle
         attr_reader :number, :jobs, :results, :child_jobs, :child_results, :current_example, :current_example_started_at
-        attr_accessor :pid, :current_unit, :state, :deadline, :escalation, :exit_status, :quit_sent, :exiting
+        attr_accessor :pid, :current_unit, :state, :escalation, :exit_status, :quit_sent, :exiting
+        # When the deadline was set: only a pause after that postpones it.
+        attr_reader :deadline, :deadline_set_at
         # Forked before the spec files were loaded and has not yet reported
         # what it loaded.
         attr_accessor :loading
@@ -23,8 +25,18 @@ module RSpec
           @quit_sent = false
           @exiting = false
           @loading = false
-          @pid = @current_unit = @deadline = @escalation = @exit_status = nil
+          @pid = @current_unit = @deadline = @deadline_set_at = @escalation = @exit_status = nil
           @current_example = @current_example_started_at = nil
+        end
+
+        def deadline=(value)
+          @deadline = value
+          @deadline_set_at = value && Parallel.monotonic_time
+        end
+
+        # Moves the deadline back without changing when it was set.
+        def postpone(seconds)
+          @deadline += seconds if @deadline
         end
 
         def current_example=(example)
@@ -111,7 +123,7 @@ module RSpec
         # `deadline`.
         def signal(process, signal_name, escalation, deadline)
           @escalation = escalation
-          @deadline = deadline
+          self.deadline = deadline
           process.kill(signal_name, @pid) if @pid
         rescue Errno::ESRCH, Errno::EPERM
           nil
