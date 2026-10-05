@@ -1,14 +1,18 @@
 module RSpec
   module Core
     module Parallel
-      # The coordinating side of a parallel run. It forks the workers after the
-      # suite has been loaded (so they inherit every example group, filter and
-      # configuration), hands out top-level example groups from a shared queue,
-      # streams the results onto the configuration's reporter -- the one and
-      # only place formatters run -- and makes sure that no worker, however it
-      # misbehaves, can keep the run from finishing.
+      # The coordinating side of a parallel run. It forks the workers -- after
+      # the suite has been loaded, so they inherit every example group, filter
+      # and configuration, or before, so they load the spec files themselves
+      # (`config.parallel_preload = false`) -- hands out top-level example
+      # groups from a shared queue, streams the results onto the
+      # configuration's reporter -- the one and only place formatters run --
+      # and makes sure that no worker, however it misbehaves, can keep the run
+      # from finishing.
       # @private
       class Coordinator
+        include WorkerLifecycle
+
         TICK = 0.25
         TERM_GRACE = 5.0
         KILL_GRACE = 5.0
@@ -21,12 +25,12 @@ module RSpec
         # tear down -- before the coordinator goes the way a serial run would.
         TERMINATION_SIGNALS = %w[TERM HUP].freeze
 
-        def initialize(runner, example_groups, units, worker_count, options={})
+        attr_reader :worker_count
+
+        def initialize(runner, worker_count, options={})
           @runner = runner
           @configuration = runner.configuration
           @world = runner.world
-          @example_groups = example_groups
-          @units = units
           @worker_count = worker_count
           @process = options.fetch(:process) { Process }
           @spawn = options.fetch(:spawn) { method(:fork_worker) }
@@ -35,12 +39,21 @@ module RSpec
           @kill_grace = options.fetch(:kill_grace, KILL_GRACE)
           @watchdog_grace = options.fetch(:watchdog_grace, WATCHDOG_GRACE)
           @workers = []
-          @queue = (0...@units.size).to_a
-          @unit_states = Array.new(@units.size, :pending)
           @results = Results.new
           @quitting = false
           @termination_signal = nil
           @signal_handlers = {}
+          @started_at = nil
+        end
+
+        # The groups to run. Workers forked before loading that are more than
+        # the groups to run are dismissed.
+        def assign(example_groups, units)
+          @example_groups = example_groups
+          @units = units
+          @queue = (0...@units.size).to_a
+          @unit_states = Array.new(@units.size, :pending)
+          @workers.drop(@units.size).each { |worker| dismiss_worker(worker) }
         end
 
         # @return [Integer] the exit code for the run
@@ -52,7 +65,7 @@ module RSpec
             @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
 
             begin
-              start_workers
+              @workers.empty? ? start_workers(@units) : expect_loading_workers
               event_loop
             ensure
               terminate_remaining_workers
@@ -73,21 +86,6 @@ module RSpec
         end
 
       private
-
-        def start_workers
-          Parallel.flush_output(@configuration)
-          @process.warmup if @process.respond_to?(:warmup)
-          @worker_count.times { |index| @workers << WorkerHandle.new(index + 1) }
-
-          @workers.each do |worker|
-            worker.pid = @spawn.call(worker, @workers)
-            worker.close_child_ends
-          end
-        end
-
-        def fork_worker(worker, workers)
-          worker.fork_worker(@process, @units, workers, @signal_handlers)
-        end
 
         def event_loop
           dispatch_work
@@ -168,6 +166,7 @@ module RSpec
           when :unit_finished       then unit_finished(worker, *rest)
           when :non_example_failure then non_example_failure(*rest)
           when :exiting             then worker.exiting = true
+          when :loaded              then loaded(worker, *rest)
           else report "#{worker.description} sent an unexpected #{kind.inspect} frame, which was ignored."
           end
         end
@@ -229,12 +228,11 @@ module RSpec
 
         def dispatch_work
           @workers.each do |worker|
-            next unless worker.idle?
-
-            if @quitting || @queue.empty?
-              stop(worker)
-            else
-              dispatch(worker, @queue.shift)
+            if worker.loading
+              # Nothing is left to give it once it has loaded.
+              dismiss_worker(worker) if worker.state == :running && (@quitting || @queue.empty?)
+            elsif worker.idle?
+              @quitting || @queue.empty? ? stop(worker) : dispatch(worker, @queue.shift)
             end
           end
         end
@@ -242,7 +240,7 @@ module RSpec
         def dispatch(worker, index)
           worker.current_unit = index
           @unit_states[index] = :running
-          return if write(worker, [:run, index])
+          return if write(worker, [:run, index, @units[index].id])
 
           @unit_states[index] = :pending
           @queue.unshift(index)
@@ -344,6 +342,8 @@ module RSpec
             error("#{worker.description} did not exit within #{timeout} of finishing its last example group (its " \
                   "`after(:suite)` hooks or `at_exit` handlers may be stuck), so it was sent SIGTERM. Raise " \
                   "`config.parallel_shutdown_timeout` if it legitimately needs longer.")
+          elsif worker.loading
+            lost(worker, "took longer than #{Parallel.seconds(@load_allowance)}", SENT_TERM)
           elsif worker.quit_sent
             lost(worker, "did not stop within #{timeout} of being asked to stop early (fail-fast or interrupt)", SENT_TERM)
           else
@@ -364,7 +364,10 @@ module RSpec
         # on is read: it would report the example a second time.
         def lost(worker, what, consequence='')
           unit = worker.current_unit && unit_description(worker.current_unit)
-          if worker.current_example
+          if worker.loading
+            worker.loading = false
+            error("#{worker.description} #{what} while loading the spec files#{consequence}.")
+          elsif worker.current_example
             example, result = worker.lost_example_result(
               "#{worker.description} #{what} while running this example#{consequence}" \
               "#{"; the rest of #{unit} did not run" if unit}."
@@ -390,37 +393,7 @@ module RSpec
             @unit_states[index] = :aborted
             worker.current_unit = nil
           end
-          @sequencer.abandon(worker.number)
-        end
-
-        # Runs on every exit path, so an exception in the coordinator can never
-        # leave workers behind. Bounded by the same TERM/KILL grace periods.
-        def terminate_remaining_workers
-          @workers.each { |worker| worker.state = :exited if worker.pid.nil? }
-          live = @workers.reject(&:done?)
-          return if live.empty?
-
-          live.each do |worker|
-            worker.state = :terminating
-            worker.signal(@process, 'TERM', :term, now + @term_grace)
-          end
-          wait_for_exit(live, @term_grace)
-          live.reject(&:done?).each { |worker| worker.signal(@process, 'KILL', :kill, now + @kill_grace) }
-          wait_for_exit(live, @kill_grace)
-
-          live.reject(&:done?).each do |worker|
-            report "#{worker.description} survived SIGKILL; giving up on it."
-            abort_unit(worker)
-            worker.state = :abandoned
-          end
-        end
-
-        def wait_for_exit(workers, grace)
-          deadline = now + grace
-          until workers.all?(&:done?) || now >= deadline
-            sleep [@tick, 0.05].min
-            reap_workers
-          end
+          @sequencer&.abandon(worker.number)
         end
 
         def report_unrun_units

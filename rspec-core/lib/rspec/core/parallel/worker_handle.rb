@@ -6,6 +6,9 @@ module RSpec
       class WorkerHandle
         attr_reader :number, :jobs, :results, :child_jobs, :child_results, :current_example, :current_example_started_at
         attr_accessor :pid, :current_unit, :state, :deadline, :escalation, :exit_status, :quit_sent, :exiting
+        # Forked before the spec files were loaded and has not yet reported
+        # what it loaded.
+        attr_accessor :loading
 
         def initialize(number)
           @number = number
@@ -14,6 +17,7 @@ module RSpec
           @state = :running
           @quit_sent = false
           @exiting = false
+          @loading = false
           @pid = @current_unit = @deadline = @escalation = @exit_status = nil
           @current_example = @current_example_started_at = nil
         end
@@ -47,7 +51,8 @@ module RSpec
           [example, result]
         end
 
-        # @return [Integer] the pid of the worker process forked to run `units`
+        # @return [Integer] the pid of the worker process forked to run `units`,
+        #   or to load the spec files itself when there are none yet
         def fork_worker(process, units, handles, signal_handlers={})
           process.fork do
             # :nocov: - runs in the forked worker process, covered by integration specs
@@ -74,7 +79,7 @@ module RSpec
         end
 
         def idle?
-          @state == :running && @current_unit.nil?
+          @state == :running && @current_unit.nil? && !@loading
         end
 
         def busy?

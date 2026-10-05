@@ -82,7 +82,7 @@ module RSpec::Core::Parallel
         instance.run
 
         expect(instance).to have_received(:watch_coordinator)
-        expect(exits).to eq([[:exit, 0]])
+        expect(exits).to eq([[:exit_now, 0]])
       end
     end
 
@@ -153,21 +153,28 @@ module RSpec::Core::Parallel
         expect(all.map(&:first)).to include(:group_started, :example_started, :example_finished, :group_finished)
       end
 
-      it "treats a quit request received while idle like stop" do
-        jobs.last.send([:quit])
+      it "exits at once, without running suite hooks or at_exit handlers, when its first job is not a group to run" do
+        hooks = []
+        RSpec.configuration.before(:suite) { hooks << :before_suite }
+        RSpec.configuration.after(:suite) { hooks << :after_suite }
 
-        worker.run
+        [[:stop], [:quit]].each do |job|
+          exits.clear
+          jobs.last.send(job)
+          worker.run
+          expect(exits).to eq([[:exit_now, 0]])
+        end
 
-        expect(exits).to eq([[:exit, 0]])
-        expect(frames).to eq([[:exiting]])
+        expect(hooks).to eq([])
+        expect(frames).to eq([])
       end
 
-      it "stops when the coordinator goes away" do
+      it "exits at once when the coordinator goes away before giving it anything" do
         jobs.last.close
 
         worker.run
 
-        expect(exits).to eq([[:exit, 0]])
+        expect(exits).to eq([[:exit_now, 0]])
       end
 
       it "reports a quitting world and non-example failures with the unit" do
@@ -183,6 +190,7 @@ module RSpec::Core::Parallel
 
       it "exits immediately without reporting when the results pipe is gone" do
         results.first.close
+        jobs.last.send([:run, 0])
         jobs.last.send([:stop])
 
         worker.run
@@ -195,11 +203,71 @@ module RSpec::Core::Parallel
         instance = worker
         RSpec.configuration.after(:suite) { armed_during_after_suite = instance.instance_variable_get(:@watchdog_armed) }
         allow(instance).to receive(:arm_watchdog) { instance.instance_variable_set(:@watchdog_armed, true) }
+        jobs.last.send([:run, 0])
         jobs.last.send([:stop])
 
         instance.run
 
         expect(armed_during_after_suite).to be true
+      end
+    end
+
+    describe "forked before the spec files were loaded" do
+      def loading_worker
+        Worker.new(2, nil, jobs.first, results.last,
+                   :stderr => stderr,
+                   :exit => lambda { |status| exits << [:exit, status] },
+                   :exit_now => lambda { |status| exits << [:exit_now, status] },
+                   :trap => lambda { |*| },
+                   :watch_coordinator => false)
+      end
+
+      def write_spec_file(dir, content)
+        File.join(dir, "loaded_spec.rb").tap do |path|
+          File.write(path, content)
+          RSpec.configuration.files_or_directories_to_run = [path]
+        end
+      end
+
+      # The worker blocks on the jobs channel once it has loaded the files.
+      def run_in_thread(instance)
+        Thread.new { instance.run }.tap { |thread| thread.report_on_exception = false }
+      end
+
+      it "loads them itself, reports what it loaded, then runs the groups it is given by id" do
+        Dir.mktmpdir do |dir|
+          write_spec_file(dir, "RSpec.describe('Loaded here') { it('passes') { } }")
+          thread = run_in_thread(loading_worker)
+
+          loaded = results.first.receive
+          group = RSpec.world.example_groups.first
+          expect(loaded).to eq([:loaded, RSpec::Core::Parallel.suite_digest(RSpec.world), nil])
+          expect(group.description).to eq("Loaded here")
+
+          jobs.last.send([:run, 0, group.id])
+          jobs.last.send([:stop])
+          expect(thread.join(10)).to be_truthy
+
+          expect(exits).to eq([[:exit, 0]])
+          expect(frames).to include([:unit_finished, 0, true, false, false])
+        end
+      end
+
+      it "reports the first load error with what it loaded, and nothing else loading reported" do
+        Dir.mktmpdir do |dir|
+          write_spec_file(dir, "RSpec.deprecate('old_thing')\nraise 'boom at load'\n")
+          thread = run_in_thread(loading_worker)
+
+          kind, digest, failure = results.first.receive
+          jobs.last.send([:stop])
+          expect(thread.join(10)).to be_truthy
+
+          expect([kind, digest]).to eq([:loaded, RSpec::Core::Parallel.suite_digest(RSpec.world)])
+          expect(failure).to match(/\AAn error occurred while loading .*loaded_spec\.rb\. RuntimeError: boom at load\z/)
+          expect(frames).to eq([])
+          expect(RSpec.world.non_example_failure).to be_falsey
+          expect(exits).to eq([[:exit_now, 0]])
+        end
       end
     end
 

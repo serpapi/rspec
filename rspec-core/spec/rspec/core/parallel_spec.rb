@@ -22,15 +22,18 @@ module RSpec::Core
       it "uses one worker per processor for :auto", :skip => !RSpec::Support::RubyFeatures.fork_supported? do
         config.parallel_workers = :auto
         allow(Parallel).to receive(:default_worker_count).and_return(2)
-        expect(Parallel::Coordinator).to receive(:new).with(runner, anything, anything, 2).and_return(:coordinator)
+        coordinator = instance_double(Parallel::Coordinator, :assign => nil)
+        expect(Parallel::Coordinator).to receive(:new).with(runner, 2).and_return(coordinator)
 
-        expect(Parallel.coordinator_for(runner, groups(5))).to eq(:coordinator)
+        expect(Parallel.coordinator_for(runner, groups(5))).to eq(coordinator)
       end
 
       it "never starts more workers than there are groups with examples to run", :skip => !RSpec::Support::RubyFeatures.fork_supported? do
         config.parallel_workers = 8
         empty = RSpec.describe("empty")
-        expect(Parallel::Coordinator).to receive(:new).with(runner, anything, anything, 3).and_return(:coordinator)
+        coordinator = instance_double(Parallel::Coordinator)
+        expect(Parallel::Coordinator).to receive(:new).with(runner, 3).and_return(coordinator)
+        expect(coordinator).to receive(:assign).with(anything, satisfy { |units| units.size == 3 })
 
         Parallel.coordinator_for(runner, groups(3) + [empty])
       end
@@ -72,6 +75,87 @@ module RSpec::Core
 
           expect(Parallel.coordinator_for(runner, groups(3))).to be_nil
         end
+      end
+
+      context "with workers forked before the spec files were loaded" do
+        let(:started) { instance_double(Parallel::Coordinator, :worker_count => 3, :assign => nil, :dismiss => nil) }
+
+        it "assigns them the groups to run" do
+          all = groups(5)
+
+          expect(Parallel.coordinator_for(runner, all, started)).to be(started)
+          expect(started).to have_received(:assign).with(all, all)
+        end
+
+        it "dismisses them when fewer than two groups are to run" do
+          expect(Parallel.coordinator_for(runner, groups(1), started)).to be_nil
+          expect(started).to have_received(:dismiss)
+        end
+
+        it "runs serially, without warning again, when they could not be forked" do
+          config.parallel_workers = 2
+          config.parallel_preload = false
+          expect(RSpec).not_to receive(:warning)
+
+          expect(Parallel.coordinator_for(runner, groups(3), nil)).to be_nil
+        end
+      end
+    end
+
+    describe ".coordinator_before_loading" do
+      before { allow(config).to receive(:files_to_run).and_return(%w[a_spec.rb b_spec.rb c_spec.rb]) }
+
+      it "forks nothing when the spec files are to be loaded first, as by default" do
+        config.parallel_workers = 2
+        expect(Parallel::Coordinator).not_to receive(:new)
+
+        expect(Parallel.coordinator_before_loading(runner)).to be_nil
+      end
+
+      context "when every worker is to load the spec files itself", :skip => !RSpec::Support::RubyFeatures.fork_supported? do
+        before { config.parallel_preload = false }
+
+        it "starts at most as many workers as there are spec files" do
+          config.parallel_workers = 8
+          coordinator = instance_double(Parallel::Coordinator, :start => nil)
+          expect(Parallel::Coordinator).to receive(:new).with(runner, 3).and_return(coordinator)
+
+          expect(Parallel.coordinator_before_loading(runner)).to be(coordinator)
+          expect(coordinator).to have_received(:start)
+        end
+
+        it "starts none when parallel runs are not requested, or for fewer than two spec files" do
+          expect(Parallel.coordinator_before_loading(runner)).to be_nil
+
+          config.parallel_workers = 4
+          allow(config).to receive(:files_to_run).and_return(%w[a_spec.rb a_spec.rb])
+          expect(Parallel.coordinator_before_loading(runner)).to be_nil
+        end
+      end
+    end
+
+    describe ".suite_digest" do
+      it "fingerprints the ids, locations and descriptions of the examples to run, in load order" do
+        RSpec.describe("A") do
+          it("one") {}
+          it("two") {}
+        end
+        RSpec.describe("B") { it("three") {} }
+        first = Parallel.suite_digest(RSpec.world)
+
+        expect(Parallel.suite_digest(RSpec.world)).to eq(first)
+        RSpec.world.example_groups.last.examples.first.metadata[:description] = "changed"
+        RSpec.world.example_groups.last.examples.first.metadata[:full_description] = "B changed"
+        expect(Parallel.suite_digest(RSpec.world)).not_to eq(first)
+      end
+
+      it "leaves out the examples that are filtered out" do
+        RSpec.describe("A") { it("one") {} }
+        unfiltered = Parallel.suite_digest(RSpec.world)
+        RSpec.describe("B") { it("skipped by the filter", :slow) {} }
+        RSpec.world.filter_manager.exclude(:slow => true)
+
+        expect(Parallel.suite_digest(RSpec.world)).to eq(unfiltered)
       end
     end
 

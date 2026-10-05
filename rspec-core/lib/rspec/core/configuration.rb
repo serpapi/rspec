@@ -239,11 +239,11 @@ module RSpec
       #
       # Workers are forked from this process once the suite has been loaded,
       # so they inherit everything `spec_helper` and the spec files set up at
-      # load time -- including connections opened then. `before(:suite)` and
-      # `after(:suite)` hooks run once in each worker, where
-      # {#parallel_worker_number} and `ENV['TEST_ENV_NUMBER']` identify the
-      # worker. Formatters run in this process only and see the notifications
-      # of a normal run.
+      # load time -- including connections opened then -- unless
+      # {#parallel_preload} is off. `before(:suite)` and `after(:suite)`
+      # hooks run once in each worker, where {#parallel_worker_number} and
+      # `ENV['TEST_ENV_NUMBER']` identify the worker. Formatters run in this
+      # process only and see the notifications of a normal run.
       #
       # Needs `fork`; where it is unavailable (Windows, JRuby) the run is
       # serial and a warning is printed, as it is when `TEST_ENV_NUMBER` is
@@ -271,6 +271,19 @@ module RSpec
       # exits with {#error_exit_code}.
       # @return [Numeric]
       add_setting :parallel_shutdown_timeout
+
+      # @macro add_setting
+      # Whether the spec files are loaded before the parallel workers are
+      # forked (default: `true`), so that they share them. When `false`
+      # (`--no-parallel-preload`) the workers are forked as soon as the
+      # `--require`d files are loaded, and each loads the spec files itself
+      # -- once `ENV['TEST_ENV_NUMBER']` is set -- as this process does for
+      # its reporting. Nothing the spec files do while loading (connections,
+      # threads, system libraries they initialize) is then shared with the
+      # workers, at the cost of loading them once per worker. A worker that
+      # does not load the same examples as this process is not used.
+      # @return [Boolean]
+      add_setting :parallel_preload
 
       # The 1-based number of the parallel worker this process is, or `nil`
       # in the coordinating process and in serial runs. In workers,
@@ -510,6 +523,7 @@ module RSpec
         @fail_if_no_examples = false
         @parallel_workers = nil
         @parallel_shutdown_timeout = 30
+        @parallel_preload = true
         @parallel_worker_number = nil
         @spec_files_loaded = false
 

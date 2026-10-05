@@ -650,4 +650,72 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     expect(last_cmd_stdout).to include("2 examples, 0 failures")
     expect(last_cmd_stderr).to include("Ignoring `--parallel`: this process is already a worker of a parallel test run")
   end
+
+  describe 'with --no-parallel-preload' do
+    def write_marking_spec_files
+      3.times do |i|
+        write_file_formatted "spec/m#{i}_spec.rb", "
+          File.write(\"loaded_m#{i}_\#{Process.pid}_\#{ENV.fetch('TEST_ENV_NUMBER', 'none')}\", '')
+          RSpec.describe('M#{i}') do
+            it('runs in a process that loaded its file') { expect(File).to exist(\"loaded_m#{i}_\#{Process.pid}_\#{ENV['TEST_ENV_NUMBER']}\") }
+          end
+        "
+      end
+    end
+
+    def loaders
+      cd('.') { Dir['loaded_*'].map { |file| file.split('_', 4).last }.tally }
+    end
+
+    it 'has every worker load the spec files itself, once TEST_ENV_NUMBER is set, and run what it loaded' do
+      write_marking_spec_files
+
+      run_rspec '--parallel=2 --no-parallel-preload'
+
+      expect(last_cmd_stdout).to include("3 examples, 0 failures")
+      expect(last_cmd_exit_status).to eq(0)
+      expect(loaders).to eq("none" => 3, "" => 3, "2" => 3)
+    end
+
+    it 'does not use a worker that loads other examples than the coordinating process' do
+      write_marking_spec_files
+      write_file_formatted 'spec/z_spec.rb', "
+        RSpec.describe('Z') { it('passes') { }; it('only in the second worker') { } if ENV['TEST_ENV_NUMBER'] == '2' }
+      "
+
+      run_rspec '--parallel=2 --no-parallel-preload'
+
+      expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) loaded other examples than this process/)
+      expect(last_cmd_stdout).to include("4 examples, 0 failures, 1 error occurred outside of examples")
+      expect(last_cmd_exit_status).to eq(1)
+    end
+
+    it 'terminates a worker still loading long after the coordinating process finished, and runs its groups elsewhere' do
+      write_file_formatted 'spec/spec_helper.rb', "RSpec.configure { |c| c.parallel_shutdown_timeout = 1 }"
+      3.times do |i|
+        write_file_formatted "spec/s#{i}_spec.rb", "
+          sleep 600 if ENV['TEST_ENV_NUMBER'] == '2'
+          RSpec.describe('S#{i}') { it('keeps the other worker busy past the deadline') { sleep 0.7 } }
+        "
+      end
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec '--require ./spec/spec_helper --parallel=2 --no-parallel-preload'
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 20
+      expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds while loading the spec files, so it was sent SIGTERM\./)
+      expect(last_cmd_stdout).to include("3 examples, 0 failures, 1 error occurred outside of examples")
+    end
+
+    it 'goes on like a serial run when a spec file fails to load in every process' do
+      write_marking_spec_files
+      write_file_formatted 'spec/broken_spec.rb', "RSpec.describe('Broken') { it('a') { }"
+
+      run_rspec '--parallel=2 --no-parallel-preload'
+
+      expect(last_cmd_stdout).to include("While loading ./spec/broken_spec.rb a `raise SyntaxError` occurred")
+      expect(last_cmd_stdout).to include("3 examples, 0 failures, 1 error occurred outside of examples")
+      expect(last_cmd_stdout).not_to include("Parallel worker")
+    end
+  end
 end

@@ -365,6 +365,13 @@ module RSpec::Core
       end
     end
 
+    describe "--[no-]parallel-preload" do
+      it "chooses whether the spec files are loaded before forking the workers or by each of them" do
+        expect(Parser.parse(%w[ --parallel-preload ])).to include(:parallel_preload => true)
+        expect(Parser.parse(%w[ --no-parallel-preload ])).to include(:parallel_preload => false)
+      end
+    end
+
     describe "--bisect" do
       it "sets the `:bisect` option" do
         options = Parser.parse(%w[ --bisect ])

@@ -18,9 +18,13 @@ Enhancements:
   `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its threads,
   so a stuck `at_exit` handler can no longer hang a run, and a worker that crashes fails the
   example it was running instead of taking the run down. A run stopped with SIGTERM or SIGHUP
-  says which example each worker was running and for how long. Where `fork` is unavailable the run
-  is serial with a warning. `--bisect` runs serially, and the reproduction command it prints
-  now ends with `--no-parallel`. (Illia Zub)
+  says which example each worker was running and for how long. With `--no-parallel-preload`
+  (`RSpec::Core::Configuration#parallel_preload`) the workers are forked before the spec
+  files are loaded and each loads them itself, so nothing the spec files do while loading is
+  shared with the workers; a worker that does not load the examples the coordinating process
+  has is not used. Where `fork` is unavailable the run is serial with a warning. `--bisect`
+  runs serially, and the reproduction command it prints now ends with `--no-parallel`.
+  (Illia Zub)
 
 # 4.0.0.beta1 / 2026-02-18
 

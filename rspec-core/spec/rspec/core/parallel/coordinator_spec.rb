@@ -15,6 +15,10 @@ module RSpec::Core::Parallel
 
     attr_reader :signals, :warmups
 
+    def threads
+      @threads.values
+    end
+
     def initialize(survives=[])
       @threads = {}
       @statuses = {}
@@ -96,7 +100,10 @@ module RSpec::Core::Parallel
         when :garbage        then stall_after { results.io.write("garbage\n") }
         when :partial_frame  then stall_after { results.io.write("999\nabc") }
         when :closes_results then stall_after { results.close }
+        when :never_loads    then sleep
+        when :dies_loading   then Thread.current.kill
         else
+          report_loaded(results, behaviour) if handle.loading
           send_unknown_ids(results) if behaviour == :unknown_ids
           run_fake_worker(handle.number, jobs, results, behaviour) { |status| exit_status = status }
         end
@@ -112,6 +119,14 @@ module RSpec::Core::Parallel
     def stall_after
       yield
       sleep
+    end
+
+    # What a worker forked before loading reports once it has loaded the spec
+    # files: by default, the examples this process has.
+    def report_loaded(results, behaviour)
+      digest = behaviour == :loads_other_examples ? "other examples" : RSpec::Core::Parallel.suite_digest(world)
+      failure = "An error occurred while loading ./spec/x_spec.rb. RuntimeError: boom" if behaviour == :fails_to_load
+      results.send([:loaded, digest, failure])
     end
 
     def send_unknown_ids(results)
@@ -141,13 +156,22 @@ module RSpec::Core::Parallel
     # A fake worker killed with a signal is gone once its thread has died,
     # which a loaded machine can delay: the grace periods are long unless a
     # spec is about them, so that a slow death is not escalated.
-    def coordinator(units, worker_count=2, options={})
+    def new_coordinator(units, worker_count, options)
       units.each { |group| group.include(WithoutMocksLifecycle) }
       @units = units
       @process = options.fetch(:process, process)
-      Coordinator.new(runner, units, units, worker_count,
-                      { :process => @process, :spawn => method(:spawn), :tick => 0.01,
-                        :term_grace => 5, :kill_grace => 5, :watchdog_grace => 0.05 }.merge(options))
+      Coordinator.new(runner, worker_count, { :process => @process, :spawn => method(:spawn), :tick => 0.01,
+                                              :term_grace => 5, :kill_grace => 5, :watchdog_grace => 0.05 }.merge(options))
+    end
+
+    def coordinator(units, worker_count=2, options={})
+      new_coordinator(units, worker_count, options).tap { |instance| instance.assign(units, units) }
+    end
+
+    # Started the way `--no-parallel-preload` starts it: the workers are forked
+    # before the groups to run are known, and load the spec files themselves.
+    def started_coordinator(units, worker_count=2, options={})
+      new_coordinator(units, worker_count, options).tap(&:start)
     end
 
     let(:short_graces) { { :term_grace => 0.1, :kill_grace => 0.1 } }
@@ -406,6 +430,116 @@ module RSpec::Core::Parallel
         expect(groups.last.examples.first.exception).to be_a(WorkerError)
         expect(messages).to include("2 examples, 2 failures")
         expect(messages).not_to include("sending SIGKILL")
+      end
+    end
+
+    describe "with workers forked before the spec files are loaded" do
+      def run_started(units, worker_count=2, options={})
+        started_coordinator(units, worker_count, options).tap { |instance| instance.assign(units, units) }.run
+      end
+
+      it "gives work to the workers that report having loaded the examples this process has" do
+        groups = %w[A B C].map { |name| passing_group(name) }
+
+        exit_code = run_started(groups)
+
+        expect(exit_code).to eq(0)
+        expect(messages).to include("3 examples, 0 failures")
+        expect(process.signals).to be_empty
+      end
+
+      it "does not use a worker that loaded other examples, and runs its share elsewhere" do
+        config.error_exit_code = 5
+        worker_behaviours[2] = :loads_other_examples
+        groups = %w[A B C].map { |name| passing_group(name) }
+
+        exit_code = run_started(groups)
+
+        expect(exit_code).to eq(5)
+        expect(messages).to match(/Parallel worker 2 \(pid \d+\) loaded other examples than this process .*--parallel-preload.*, so it was not used\./)
+        expect(messages).to include("3 examples, 0 failures, 1 error occurred outside of examples")
+        expect(process.signals.map(&:first)).to eq(["KILL"])
+      end
+
+      it "does not use a worker whose loading failed when this process's did not" do
+        worker_behaviours[2] = :fails_to_load
+        groups = %w[A B].map { |name| passing_group(name) }
+
+        run_started(groups)
+
+        expect(messages).to include("Parallel worker 2 (pid #{process.signals.first.last}) could not load the spec files: " \
+                                    "An error occurred while loading ./spec/x_spec.rb. RuntimeError: boom, so it was not used.")
+        expect(messages).to include("2 examples, 0 failures, 1 error occurred outside of examples")
+      end
+
+      it "uses a worker whose loading failed the way this process's did, like a serial run goes on" do
+        worker_behaviours[2] = :fails_to_load
+        groups = %w[A B].map { |name| passing_group(name) }
+        world.non_example_failure = true
+
+        run_started(groups)
+
+        expect(messages).not_to include("could not load")
+        expect(process.signals).to be_empty
+        expect(groups.flat_map(&:examples).map { |e| e.execution_result.status }).to all(eq(:passed))
+      end
+
+      it "terminates a worker still loading well after this process finished, and runs its share elsewhere" do
+        config.parallel_shutdown_timeout = 0.1
+        worker_behaviours[2] = :never_loads
+        groups = %w[A B C].map { |name| RSpec.describe(name) { it("takes a while") { sleep 0.2 } } }
+
+        run_started(groups)
+
+        expect(messages).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds while loading the spec files, so it was sent SIGTERM\./)
+        expect(messages).to include("3 examples, 0 failures, 1 error occurred outside of examples")
+        expect(process.signals.map(&:first)).to eq(["TERM"])
+      end
+
+      it "dismisses a worker still loading once nothing is left for it" do
+        worker_behaviours[2] = :never_loads
+        groups = %w[A B].map { |name| passing_group(name) }
+
+        exit_code = run_started(groups)
+
+        expect(exit_code).to eq(0)
+        expect(process.signals.map(&:first)).to eq(["KILL"])
+        expect(messages).not_to include("Parallel worker")
+      end
+
+      it "reports a worker that exits while loading" do
+        worker_behaviours[2] = :dies_loading
+        groups = %w[A B].map { |name| passing_group(name) }
+
+        run_started(groups)
+
+        expect(messages).to match(/Parallel worker 2 \(pid \d+\) exited unexpectedly \(exit status 1\) while loading the spec files\./)
+        expect(messages).to include("2 examples, 0 failures, 1 error occurred outside of examples")
+      end
+
+      it "dismisses the workers there are more of than groups to run" do
+        groups = %w[A B].map { |name| passing_group(name) }
+
+        exit_code = run_started(groups, 3)
+
+        expect(exit_code).to eq(0)
+        expect(process.signals.map(&:first)).to eq(["KILL"])
+        expect(messages).to include("2 examples, 0 failures")
+      end
+
+      it "dismisses every worker when the run does not need them, giving up on one that survives SIGKILL" do
+        worker_behaviours[1] = worker_behaviours[2] = :never_loads
+        survivor = FakeProcess.new(["KILL"])
+        instance = started_coordinator([passing_group("A")], 2, :process => survivor, :kill_grace => 0.1)
+
+        instance.dismiss
+
+        expect(survivor.signals.map(&:first)).to eq(%w[KILL KILL])
+        expect(messages.scan("survived SIGKILL; giving up on it.").size).to eq(2)
+        instance.dismiss
+        expect(survivor.signals.size).to eq(2)
+      ensure
+        survivor.threads.each(&:kill)
       end
     end
 

@@ -19,6 +19,12 @@ Feature: `--parallel` option
   `database.yml` and connecting -- happens once, in the coordinating process,
   and is inherited by every worker.
 
+  With `--no-parallel-preload` the workers are forked before the spec files
+  are loaded instead, and each loads them itself with its `TEST_ENV_NUMBER`
+  already set, so nothing the spec files do while loading is shared. A worker
+  is given work only once it has loaded the same examples as the coordinating
+  process.
+
   `--parallel` needs `fork`. Where it is not available (Windows, JRuby), or
   when `TEST_ENV_NUMBER` is already set because another tool is running RSpec
   in parallel, RSpec prints a warning and runs serially.
@@ -116,6 +122,24 @@ Feature: `--parallel` option
     And the stderr should contain "did not exit within 1 seconds of finishing its last example group"
     And the stderr should contain "Threads at this point:"
     And the stderr should contain "join"
+
+  Scenario: With `--no-parallel-preload` every worker loads the spec files itself
+    Given a file named "spec/gamma_spec.rb" with:
+      """ruby
+      File.write("loaded_by_#{ENV.fetch('TEST_ENV_NUMBER', 'the coordinating process')}", "")
+
+      RSpec.describe "Gamma" do
+        it "runs in a process that loaded this file" do
+          expect(File).to exist("loaded_by_#{ENV['TEST_ENV_NUMBER']}")
+        end
+      end
+      """
+    When I run `rspec --parallel=2 --no-parallel-preload --order defined`
+    Then the exit status should be 1
+    And the output should contain "5 examples, 1 failure"
+    And the file "loaded_by_the coordinating process" should exist
+    And the file "loaded_by_" should exist
+    And the file "loaded_by_2" should exist
 
   Scenario: Inside another tool's parallel worker RSpec runs serially
     Given I set the environment variable "TEST_ENV_NUMBER" to "2"

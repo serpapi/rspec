@@ -4,7 +4,9 @@ module RSpec
       # Runs in a forked worker process: executes the example groups the
       # coordinator dispatches over the jobs channel and streams results back
       # over the results channel. Suite hooks run once per worker, around all
-      # the groups it executes.
+      # the groups it executes; a worker given none exits without running
+      # them. A worker forked before the spec files were loaded (no
+      # `example_groups`) loads them itself and reports what it loaded first.
       #
       # A worker that has finished its work but does not exit (a non-daemon
       # thread in `at_exit`, a browser that will not quit, ...) is aborted by
@@ -48,8 +50,10 @@ module RSpec
         def run
           watch_coordinator if @watch_coordinator
           prepare
-          run_units
-          @exit.call(0)
+          load_spec_files unless @example_groups
+
+          # One that ran nothing has no suite hooks or `at_exit` handlers to run.
+          run_units ? @exit.call(0) : @exit_now.call(0)
         rescue Errno::EPIPE, IOError
           # The coordinator is gone; there is nobody left to report to.
           @exit_now.call(1)
@@ -106,13 +110,30 @@ module RSpec
           end
         end
 
+        # Loads the spec files as the coordinator does after forking, and
+        # tells it which examples that defined and the first load error, if
+        # any: it uses the worker only if its own loading went the same way.
+        # What loading reports is for the coordinator to report.
+        # @private
+        def load_spec_files
+          forwarding = @configuration.reporter
+          @configuration.reporter = loading = LoadReporter.new(@configuration)
+          @configuration.load_spec_files
+          @configuration.reporter = forwarding
+          @groups_by_id = @world.example_groups.to_h { |group| [group.id, group] }
+          @results.send([:loaded, Parallel.suite_digest(@world), loading.failure])
+        end
+
+        # @return [Boolean] whether it was given anything to run
         # @private
         def run_units
-          @configuration.with_suite_hooks do
-            while (message = @jobs.receive)
-              break unless message.first == :run
+          message = @jobs.receive
+          return false unless message && message.first == :run
 
-              run_unit(message[1])
+          @configuration.with_suite_hooks do
+            while message && message.first == :run
+              run_unit(message[1], message[2])
+              message = @jobs.receive
             end
 
             # Armed before `after(:suite)` hooks so that a hook that never
@@ -121,11 +142,13 @@ module RSpec
           end
 
           @results.send([:exiting])
+          true
         end
 
         # @private
-        def run_unit(index)
-          passed = @example_groups.fetch(index).run(@reporter)
+        def run_unit(index, id)
+          group = @groups_by_id ? @groups_by_id.fetch(id) : @example_groups.fetch(index)
+          passed = group.run(@reporter)
           @results.send([:unit_finished, index, passed ? true : false,
                          !!@world.wants_to_quit, !!@world.non_example_failure])
         end
@@ -152,6 +175,20 @@ module RSpec
             Array(thread.backtrace).each { |line| stderr.puts "    #{line}" }
           end
           stderr.flush
+        end
+
+        # Reports nothing: while a worker loads the spec files, what they
+        # report is for the coordinating process, which loads them too, to
+        # report. Remembers the first error.
+        # @private
+        class LoadReporter < Reporter
+          attr_reader :failure
+
+          def notify_non_example_exception(exception, context_description, _presenter_options={})
+            return if @failure
+
+            @failure = "#{context_description} #{exception.class}: #{exception.message}"
+          end
         end
       end
     end

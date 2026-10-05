@@ -75,6 +75,18 @@ module RSpec::Core
       end
     end
 
+    describe "#parallel_preload" do
+      it "defaults to loading the spec files before forking the workers" do
+        expect(config.parallel_preload?).to be true
+      end
+
+      it "prefers the value forced from the command line" do
+        config.parallel_preload = true
+        config.force(:parallel_preload => false)
+        expect(config.parallel_preload?).to be false
+      end
+    end
+
     describe "#parallel_worker_number" do
       it "is nil until the parallel runner sets it in a worker" do
         expect(config.parallel_worker_number).to be_nil

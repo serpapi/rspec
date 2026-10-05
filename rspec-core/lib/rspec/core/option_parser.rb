@@ -80,6 +80,9 @@ module RSpec::Core
           options[:parallel_workers] = parallel_workers_from(argument)
         end
 
+        parser.on('--[no-]parallel-preload', 'Load the spec files before forking the --parallel workers (the default),',
+                  '  or fork first and have every worker load them itself.') { |value| options[:parallel_preload] = value }
+
         parser.on('--[no-]fail-fast[=COUNT]', 'Abort the run after a certain number of failures (1 by default).') do |argument|
           if argument == true
             value = 1

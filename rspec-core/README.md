@@ -307,19 +307,33 @@ Workers inherit everything that happened while the suite was loaded. For a
 Rails application that means `rails_helper` has already evaluated
 `database.yml` and connected to the database in the coordinating process
 before any worker exists: setting `TEST_ENV_NUMBER` afterwards does **not**
-give workers separate databases, so Rails suites run under `--parallel` share
-one test database until rspec-rails adds per-worker database support. Open
-connections, servers and similar resources acquired at load time are shared
-the same way; acquire them in `before(:suite)` to get one per worker. In
-particular, a database client that connected while the spec files loaded (a
+give workers separate databases, so such Rails suites run under `--parallel`
+share one test database until rspec-rails adds per-worker database support.
+Open connections, servers and similar resources acquired at load time are
+shared the same way; acquire them in `before(:suite)` to get one per worker.
+In particular, a database client that connected while the spec files loaded (a
 query at load time is enough) hands the same connection to every worker unless
 it reconnects after `fork` by itself -- as with app servers that preload, make
 each worker reconnect in a `before(:suite)` hook, e.g.
 `Mongoid.disconnect_clients`. On macOS, the system networking libraries do not
-survive `fork` well either: when loading the spec files makes real requests
-(resolving host names from several threads, say), workers can crash in
-`getaddrinfo` or hang. Keep such work out of load time -- in `before(:context)`
-hooks it runs in the workers instead.
+survive `fork` well either: when loading the spec files does a lot of work
+(resolving host names, say), workers can crash in `getaddrinfo` or hang.
+
+Or have every worker load the spec files itself: with `--no-parallel-preload`
+(`config.parallel_preload = false` in a `--require`d file) the workers are
+forked as soon as the `--require`d files are loaded, before the spec files.
+Each worker then loads the spec files with its `TEST_ENV_NUMBER` already set,
+and the coordinating process loads them too, for its reporting. Nothing the
+spec files do while loading is shared then -- connections, threads, system
+libraries they initialize -- and helpers they require (rather than `.rspec`)
+load in every worker, so a Rails app whose spec files `require 'rails_helper'`
+boots in each worker with its own `TEST_ENV_NUMBER`. The cost is loading the
+spec files once per process: more CPU and memory, though they load at the same
+time, and whatever they do at load time is done that many times. A worker is
+given work only once it has loaded the examples the coordinating process has;
+one that loads others (from spec files that define examples depending on the
+process, the time or randomness), or is still loading long after the
+coordinating process finished, is not used and its groups run elsewhere.
 
 Formatters receive examples with their status, timing, pending details,
 exceptions (class name, message, backtrace, cause chain and aggregated
