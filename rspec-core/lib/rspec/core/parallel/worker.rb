@@ -34,6 +34,7 @@ module RSpec
           end
           @ppid = options.fetch(:ppid) { Process.method(:ppid) }
           @watch_coordinator = options.fetch(:watch_coordinator, true)
+          @signal_handlers = options.fetch(:signal_handlers, {})
         end
 
         # @return [String] the `TEST_ENV_NUMBER` value for this worker, following
@@ -79,8 +80,9 @@ module RSpec
         def prepare
           Runner.disable_autorun!
           trap_interrupt
-          # The coordinator's own handlers for these are inherited; a worker just goes.
-          Coordinator::TERMINATION_SIGNALS.each { |signal| @trap.call(signal, 'DEFAULT') if Signal.list.key?(signal) }
+          # Inherited from the coordinator: its handlers, which a worker swaps
+          # back for the ones they replaced.
+          @signal_handlers.each { |signal, previous| @trap.call(signal, previous || 'DEFAULT') }
           ENV['TEST_ENV_NUMBER'] = test_env_number
           @configuration.parallel_worker_number = @number
           @configuration.reset_reporter

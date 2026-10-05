@@ -40,12 +40,13 @@ module RSpec
           @results = Results.new
           @quitting = false
           @termination_signal = nil
+          @signal_handlers = {}
         end
 
         # @return [Integer] the exit code for the run
         def run
           reporter = @configuration.reporter
-          handlers = Parallel.trap_signals(TERMINATION_SIGNALS) { |signal| @termination_signal ||= signal }
+          @signal_handlers = Parallel.trap_signals(TERMINATION_SIGNALS) { |signal| @termination_signal ||= signal }
 
           passed = reporter.report(@world.example_count(@example_groups)) do
             @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
@@ -68,7 +69,7 @@ module RSpec
 
           @runner.exit_code(passed)
         ensure
-          Parallel.restore_signals(handlers) if handlers
+          Parallel.restore_signals(@signal_handlers)
         end
 
       private
@@ -85,7 +86,7 @@ module RSpec
         end
 
         def fork_worker(worker, workers)
-          worker.fork_worker(@process, @units, workers)
+          worker.fork_worker(@process, @units, workers, @signal_handlers)
         end
 
         def event_loop
@@ -178,10 +179,7 @@ module RSpec
         end
 
         def index
-          @index ||= SuiteIndex.new(@world) do |id|
-            report "A parallel worker reported results for #{id}, which was not defined when the suite was loaded; " \
-                   "examples and groups defined at run time cannot be reported by `--parallel`."
-          end
+          @index ||= SuiteIndex.new(@world) { |warning| report warning }
         end
 
         # Recorded as soon as it arrives: failure counting and `.rspec_status`
@@ -293,6 +291,9 @@ module RSpec
         def judge_exit(worker, status)
           case worker.state
           when :running
+            # Asked to stop early, a worker may leave as soon as its group ends.
+            return if status&.success? && worker.exiting && worker.current_unit.nil?
+
             lost(worker, "exited unexpectedly (#{WorkerHandle.describe_status(status)})")
           when :stopping
             return if status&.success?
@@ -348,7 +349,8 @@ module RSpec
         # The worker can no longer be relied on. The example it was running,
         # if any, fails with the reason -- so the summary, `Failed examples:`
         # and `.rspec_status` point at it -- and otherwise the reason is
-        # reported as an error outside of examples.
+        # reported as an error outside of examples. Nothing it sends from now
+        # on is read: it would report the example a second time.
         def lost(worker, what, consequence='')
           unit = worker.current_unit && unit_description(worker.current_unit)
           if worker.current_example
@@ -363,6 +365,7 @@ module RSpec
             error("#{worker.description} #{what} #{where}#{consequence}.")
           end
           abort_unit(worker)
+          worker.results.close
         end
 
         # Counted as an error outside of examples, like a failing suite hook.

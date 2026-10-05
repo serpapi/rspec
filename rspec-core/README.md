@@ -346,13 +346,18 @@ OOM killer, ...) fails the example it was running with the reason, so the
 example is listed under "Failed examples" and picked up by `--only-failures`;
 the rest of its example group does not run, and problems outside of examples
 count as errors outside of examples. Workers also exit on their own if the
-coordinating process disappears.
+coordinating process disappears. SIGTERM or SIGHUP to the coordinating
+process, as `timeout` or a cancelled CI job sends, stops every worker -- even
+one that cannot tear down -- before the process ends the way a serial run
+would; a signal the run was started ignoring (`nohup`), or that your suite
+installs a handler for, is left alone.
 
 `--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
 already set because another tool is running RSpec in parallel, RSpec prints a
 warning and runs serially. `--bisect` and `--dry-run` always run serially, and
 the reproduction command `--bisect` prints includes `--no-parallel`, which (like
-`--parallel=0`) also overrides a `--parallel` stored in `.rspec`.
+`--parallel=0`) also overrides a `--parallel` stored in `.rspec`, and leaves
+`--parallel` out of its `SPEC_OPTS`.
 
 ## Store Command Line Options `.rspec`
 

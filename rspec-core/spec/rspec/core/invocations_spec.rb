@@ -105,6 +105,25 @@ module RSpec::Core
             an_instance_of(Formatters::BisectProgressFormatter)
           )
         end
+
+        it "takes the parallel options out of SPEC_OPTS, which win over the command line, while it bisects" do
+          during = []
+          allow(RSpec::Core::Bisect::Coordinator).to receive(:bisect_with) do
+            during << ENV.fetch('SPEC_OPTS', nil)
+            success
+          end
+
+          with_env_vars('SPEC_OPTS' => '--parallel=2 --order defined') do
+            run_invocation
+            expect(ENV.fetch('SPEC_OPTS', nil)).to eq('--parallel=2 --order defined')
+          end
+          with_env_vars('SPEC_OPTS' => '--no-parallel --parallel') do
+            run_invocation
+            expect(ENV.fetch('SPEC_OPTS', nil)).to eq('--no-parallel --parallel')
+          end
+
+          expect(during).to eq(['--order defined', nil])
+        end
       end
 
       context "when the bisection is successful" do

@@ -151,5 +151,46 @@ module RSpec::Core
         expect(Parallel.monotonic_time).to be >= first
       end
     end
+
+    describe "signal handling", :skip => (Signal.list.key?("HUP") ? false : "needs SIGHUP") do
+      around do |example|
+        original = trap("HUP", "DEFAULT")
+        begin
+          example.run
+        ensure
+          trap("HUP", original || "DEFAULT")
+        end
+      end
+
+      it "takes over a signal that would end the process and returns the handler it replaced" do
+        received = []
+        trap("HUP", "SYSTEM_DEFAULT")
+
+        replaced = Parallel.trap_signals(%w[HUP NOSUCHSIGNAL]) { |signal| received << signal }
+        trap("HUP", "DEFAULT").call
+
+        expect(replaced).to eq("HUP" => "SYSTEM_DEFAULT")
+        expect(received).to eq(["HUP"])
+      end
+
+      it "leaves an ignored signal ignored, as under nohup, and a handler the suite installed in place" do
+        suite_handler = proc {}
+        trap("HUP", "IGNORE")
+
+        expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
+        expect(trap("HUP", suite_handler)).to eq("IGNORE")
+
+        expect(Parallel.trap_signals(%w[HUP]) {}).to eq({})
+        expect(trap("HUP", "DEFAULT")).to equal(suite_handler)
+      end
+
+      it "reinstates the replaced handlers, using Ruby's default for one installed outside Ruby" do
+        Parallel.restore_signals("HUP" => "SYSTEM_DEFAULT")
+        expect(trap("HUP", "IGNORE")).to eq("SYSTEM_DEFAULT")
+
+        Parallel.restore_signals("HUP" => nil)
+        expect(trap("HUP", "IGNORE")).to eq("DEFAULT")
+      end
+    end
   end
 end

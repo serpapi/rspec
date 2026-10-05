@@ -127,12 +127,25 @@ module RSpec
         streams.each { |stream| stream.flush if stream.respond_to?(:flush) }
       end
 
-      # Installs `handler` for each signal the platform has.
+      # Handlers that end the process: Ruby's and the system's defaults, and
+      # `nil` -- one installed outside Ruby, which `trap` cannot reinstate.
+      ENDS_PROCESS = ['DEFAULT', 'SYSTEM_DEFAULT', nil].freeze
+
+      # Installs `handler` for each signal the platform has that would end the
+      # process. Ignored signals (as under `nohup`) and handlers the suite
+      # installed are left in place.
       # @return [Hash{String => Object}] the handlers it replaced
       # @private
       def self.trap_signals(signals, &handler)
-        signals.select { |signal| Signal.list.key?(signal) }.to_h do |signal|
-          [signal, trap(signal) { handler.call(signal) }]
+        signals.each_with_object({}) do |signal, replaced|
+          next unless Signal.list.key?(signal)
+
+          previous = trap(signal) { handler.call(signal) }
+          if ENDS_PROCESS.include?(previous)
+            replaced[signal] = previous
+          else
+            trap(signal, previous)
+          end
         end
       end
 

@@ -476,6 +476,42 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     end
   end
 
+  it 'leaves SIGHUP ignored when it starts ignoring it, as under nohup, like a serial run' do
+    write_file_formatted 'spec/hangup_spec.rb', "
+      RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
+      RSpec.describe('One') { it('hangs up on its own process') { Process.kill('HUP', Process.pid); sleep 0.1 } }
+      RSpec.describe('Two') do
+        it('outlasts a hangup of the whole run') do
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+          sleep 0.05 until File.exist?('hung_up') || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        end
+      end
+    "
+    wait_until = lambda do |seconds, &condition|
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+      sleep 0.05 until condition.call || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      condition.call
+    end
+
+    cd('.') do
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      ignoring_hangups = [RbConfig.ruby, '-e', 'trap("HUP", "IGNORE"); exec(*ARGV)']
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *ignoring_hangups, *rspec, '--parallel=2', 'spec/hangup_spec.rb',
+                          :out => 'stdout.txt', :err => File::NULL)
+      expect(wait_until.call(20) { Dir['worker_*.pid'].size == 2 }).to be true
+
+      Process.kill(:HUP, pid)
+      File.write('hung_up', '')
+      status = nil
+      finished = wait_until.call(30) { status ||= Process.waitpid2(pid, Process::WNOHANG)&.last }
+      Process.kill(:KILL, pid) && Process.wait(pid) unless finished
+
+      expect(status&.exitstatus).to eq(0)
+      expect(File.read('stdout.txt')).to include("2 examples, 0 failures")
+      expect(File.read('stdout.txt')).not_to include("SIGHUP")
+    end
+  end
+
   it 'stops workers stuck in an example once the coordinating process is gone' do
     write_file_formatted 'spec/stuck_spec.rb', "
       RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }

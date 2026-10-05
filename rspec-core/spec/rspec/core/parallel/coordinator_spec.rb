@@ -194,6 +194,34 @@ module RSpec::Core::Parallel
         expect(groups.last.examples.first.execution_result.status).to be_nil
         expect(world.wants_to_quit).to be true
       end
+
+      it "accepts a worker leaving as soon as its group ends once it was asked to stop" do
+        config.fail_fast = true
+        config.error_exit_code = 5
+        # Holds the coordinator up so that the worker has finished its group
+        # before the failure is handled and has exited before that pass ends.
+        slow_formatter = Class.new do
+          RSpec::Core::Formatters.register self, :example_started, :example_failed
+
+          def initialize(_output); end
+
+          def example_started(_notification)
+            sleep 0.1
+          end
+
+          def example_failed(_notification)
+            sleep 0.2
+          end
+        end
+        config.add_formatter(slow_formatter, output)
+        groups = [failing_group("Fails"), passing_group("Never dispatched")]
+
+        exit_code = coordinator(groups, 1).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(messages).to include("1 example, 1 failure")
+        expect(messages).not_to include("exited unexpectedly", "outside of examples")
+      end
     end
 
     describe "a worker that exits while running a group" do
@@ -297,12 +325,31 @@ module RSpec::Core::Parallel
         expect(messages).to include("1 example, 1 failure")
       end
 
+      # Fake workers share `RSpec.world`: a group started after fail-fast set
+      # `wants_to_quit` would be skipped, so the failure waits for it to start.
+      def failure_once_running(name, &body)
+        started = Queue.new
+        running = RSpec.describe(name) do
+          it("runs") do
+            started << true
+            instance_exec(&body)
+          end
+        end
+        fails = RSpec.describe("Fails") do
+          it("fails once #{name} runs") do
+            deadline = RSpec::Core::Parallel.monotonic_time + 10
+            sleep 0.01 while started.empty? && RSpec::Core::Parallel.monotonic_time < deadline
+            raise "boom"
+          end
+        end
+        [fails, running]
+      end
+
       it "fails the example it is stuck in with the reason" do
         config.parallel_shutdown_timeout = 0.1
         config.fail_fast = true
-        stuck = RSpec.describe("Stuck") { it("sleeps") { sleep } }
-        groups = [failing_group("Fails"), stuck]
-        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+        groups = failure_once_running("Stuck") { sleep }
+        stuck = groups.last
 
         exit_code = coordinator(groups).run
 
@@ -312,6 +359,19 @@ module RSpec::Core::Parallel
           /\AParallel worker 2 \(pid \d+\) did not stop within 0\.1 seconds of being asked to stop early \(fail-fast or interrupt\) while running this example, so it was sent SIGTERM; the rest of Stuck \(.+\) did not run\.\z/
         )
         expect(messages).to include("2 examples, 2 failures")
+      end
+
+      it "ignores what it sends once it was given up on, so that its example is reported once" do
+        config.parallel_shutdown_timeout = 0.1
+        config.fail_fast = true
+        groups = failure_once_running("Late") { sleep 0.5 }
+
+        exit_code = coordinator(groups, 2, :process => FakeProcess.new(["TERM"]), :term_grace => 5).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(groups.last.examples.first.exception).to be_a(WorkerError)
+        expect(messages).to include("2 examples, 2 failures")
+        expect(messages).not_to include("sending SIGKILL")
       end
     end
 
@@ -497,7 +557,8 @@ module RSpec::Core::Parallel
 
       expect { coordinator(groups).run }.to raise_error(SignalException, "SIGTERM")
       signaller.join
-      expect(process.signals.map(&:first)).to eq(["TERM"])
+      # The worker that ran A may not have been reaped yet, and gets one too.
+      expect(process.signals.map(&:first).uniq).to eq(["TERM"])
       expect(messages).to include("Received SIGTERM; stopping the workers.", "2 examples, 0 failures")
       expect(RSpec::Core::Parallel).to have_received(:restore_signals).with("TERM" => "DEFAULT")
     end

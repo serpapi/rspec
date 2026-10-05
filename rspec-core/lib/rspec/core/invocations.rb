@@ -33,21 +33,39 @@ module RSpec
             out, runner.configuration.bisect_runner
           )
 
-          success = RSpec::Core::Bisect::Coordinator.bisect_with(
-            runner, cli_args_for(options, runner.configuration), formatter
-          )
+          success = without_parallel_spec_opts(runner.configuration) do
+            RSpec::Core::Bisect::Coordinator.bisect_with(
+              runner, cli_args_for(options, runner.configuration), formatter
+            )
+          end
 
           runner.exit_code(success)
         end
 
       private
 
+        PARALLEL_OPTION = /\A--(?:no-)?parallel(?:=|\z)/
+
         # Bisection runs the suite serially; the reproduction command it
         # prints has to as well, whatever enabled parallel runs.
         def cli_args_for(options, configuration)
           return options.args unless configuration.parallel_workers
 
-          options.args.reject { |arg| arg =~ /\A--(?:no-)?parallel(?:=|\z)/ } + ['--no-parallel']
+          options.args.reject { |arg| arg =~ PARALLEL_OPTION } + ['--no-parallel']
+        end
+
+        # `SPEC_OPTS` win over the command line, and the reproduction command
+        # and the runs of `--bisect-runner=shell` reuse them.
+        def without_parallel_spec_opts(configuration)
+          original = ENV.fetch('SPEC_OPTS', nil)
+          if configuration.parallel_workers && original
+            require 'shellwords'
+            remaining = Shellwords.split(original).reject { |arg| arg =~ PARALLEL_OPTION }
+            ENV['SPEC_OPTS'] = remaining.empty? ? nil : Shellwords.join(remaining)
+          end
+          yield
+        ensure
+          ENV['SPEC_OPTS'] = original
         end
 
         def bisect_formatter_klass_for(argument)

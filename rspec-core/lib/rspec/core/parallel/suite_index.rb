@@ -5,7 +5,8 @@ module RSpec
       # workers report them under.
       # @private
       class SuiteIndex
-        # @param on_unknown [Proc] called once for each id the suite does not have
+        # @param on_unknown [Proc] called with a warning, once for each id the
+        #   suite does not have
         def initialize(world, &on_unknown)
           @world = world
           @on_unknown = on_unknown
@@ -29,7 +30,8 @@ module RSpec
           return if @unknown_ids.include?(id)
 
           @unknown_ids << id
-          @on_unknown.call(id)
+          @on_unknown.call("A parallel worker reported results for #{id}, which was not defined when the suite was " \
+                           "loaded; examples and groups defined at run time cannot be reported by `--parallel`.")
         end
 
         def examples_by_id

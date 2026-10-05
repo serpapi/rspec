@@ -38,12 +38,12 @@ module RSpec
         end
 
         # @return [Integer] the pid of the worker process forked to run `units`
-        def fork_worker(process, units, handles)
+        def fork_worker(process, units, handles, signal_handlers={})
           process.fork do
             # :nocov: - runs in the forked worker process, covered by integration specs
             handles.each { |other| other.close_all unless other.equal?(self) }
             close_parent_ends
-            Worker.new(@number, units, @child_jobs, @child_results).run
+            Worker.new(@number, units, @child_jobs, @child_results, :signal_handlers => signal_handlers).run
             # :nocov:
           end
         end

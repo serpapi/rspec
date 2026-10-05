@@ -15,13 +15,13 @@ module RSpec::Core::Parallel
 
     let(:traps) { {} }
 
-    def worker(number=2)
+    def worker(number=2, options={})
       Worker.new(number, groups, jobs.first, results.last,
-                 :stderr => stderr,
-                 :exit => lambda { |status| exits << [:exit, status] },
-                 :exit_now => lambda { |status| exits << [:exit_now, status] },
-                 :trap => lambda { |signal, command=nil, &handler| traps[signal] = command || handler },
-                 :watch_coordinator => false)
+                 { :stderr => stderr,
+                   :exit => lambda { |status| exits << [:exit, status] },
+                   :exit_now => lambda { |status| exits << [:exit_now, status] },
+                   :trap => lambda { |signal, command=nil, &handler| traps[signal] = command || handler },
+                   :watch_coordinator => false }.merge(options))
     end
 
     def frames
@@ -107,10 +107,15 @@ module RSpec::Core::Parallel
         expect(exits).to eq([[:exit_now, 1]])
       end
 
-      it "restores the default handling of the signals the coordinating process handles itself" do
+      it "reinstates the handlers the coordinating process replaced with its own, and only those" do
+        worker(2, :signal_handlers => { "TERM" => "SYSTEM_DEFAULT", "HUP" => nil }).prepare
+
+        expect(traps).to include("TERM" => "SYSTEM_DEFAULT", "HUP" => "DEFAULT")
+
+        traps.clear
         worker.prepare
 
-        expect(traps).to include("TERM" => "DEFAULT", "HUP" => "DEFAULT")
+        expect(traps.keys).to eq(["INT"])
       end
 
       it "drops the formatters inherited from the coordinating process" do
