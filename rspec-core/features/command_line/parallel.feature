@@ -136,10 +136,8 @@ Feature: `--parallel` option
       """
     When I run `rspec --parallel=2 --no-parallel-preload --order defined`
     Then the exit status should be 1
-    And the output should contain "5 examples, 1 failure"
+    And the output should match /^5 examples, 1 failure$/
     And the file "loaded_by_the coordinating process" should exist
-    And the file "loaded_by_" should exist
-    And the file "loaded_by_2" should exist
 
   Scenario: Inside another tool's parallel worker RSpec runs serially
     Given I set the environment variable "TEST_ENV_NUMBER" to "2"

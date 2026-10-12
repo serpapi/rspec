@@ -664,12 +664,22 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
   end
 
   describe 'with --no-parallel-preload' do
-    def write_marking_spec_files
+    # A worker still loading once every group has been handed out is
+    # dismissed, so on a suite this small one worker can take every group
+    # before the other has loaded. With `wait_for_both_workers` each example
+    # first waits for both workers to have loaded the last file, which keeps
+    # groups queued until they have.
+    def write_marking_spec_files(wait_for_both_workers: false)
+      wait = "deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+              sleep 0.05 until Dir['loaded_m2_*'].size == 3 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline"
       3.times do |i|
         write_file_formatted "spec/m#{i}_spec.rb", "
           File.write(\"loaded_m#{i}_\#{Process.pid}_\#{ENV.fetch('TEST_ENV_NUMBER', 'none')}\", '')
           RSpec.describe('M#{i}') do
-            it('runs in a process that loaded its file') { expect(File).to exist(\"loaded_m#{i}_\#{Process.pid}_\#{ENV['TEST_ENV_NUMBER']}\") }
+            it('runs in a process that loaded its file') do
+              #{wait if wait_for_both_workers}
+              expect(File).to exist(\"loaded_m#{i}_\#{Process.pid}_\#{ENV['TEST_ENV_NUMBER']}\")
+            end
           end
         "
       end
@@ -694,7 +704,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     end
 
     it 'has every worker load the spec files itself, once TEST_ENV_NUMBER is set, and run what it loaded' do
-      write_marking_spec_files
+      write_marking_spec_files(:wait_for_both_workers => true)
 
       run_rspec '--parallel=2 --no-parallel-preload'
 
@@ -705,7 +715,10 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
     it 'does not use a worker that loads other examples than the coordinating process' do
       write_marking_spec_files
+      # Worker 1 loads a second late, so worker 2 reports what it loaded while
+      # there are still groups to hand out, rather than being dismissed unchecked.
       write_file_formatted 'spec/z_spec.rb', "
+        sleep 1 if ENV['TEST_ENV_NUMBER'] == ''
         RSpec.describe('Z') { it('passes') { }; it('only in the second worker') { } if ENV['TEST_ENV_NUMBER'] == '2' }
       "
 
@@ -729,7 +742,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       run_rspec '--require ./spec/spec_helper --parallel=2 --no-parallel-preload'
 
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 20
-      expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds while loading the spec files, so it was sent SIGTERM\./)
+      expect(last_cmd_stdout).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds? while loading the spec files, so it was sent SIGTERM\./)
       expect(last_cmd_stdout).to include("3 examples, 0 failures, 1 error occurred outside of examples")
     end
 

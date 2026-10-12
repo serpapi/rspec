@@ -1,3 +1,8 @@
+# Loaded here: the fake workers below are threads of this process, and Ruby
+# 3.0 warns ("loading in progress, circular require considered harmful") when
+# a thread requires a file another thread is loading, which fails this suite.
+require 'digest/sha2'
+
 module RSpec::Core::Parallel
   # Stands in for `Process` so that workers can be plain threads: `kill`
   # ends the thread unless the "signal" is one the fake worker is said to
@@ -515,7 +520,7 @@ module RSpec::Core::Parallel
 
         run_started(groups)
 
-        expect(messages).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds while loading the spec files, so it was sent SIGTERM\./)
+        expect(messages).to match(/Parallel worker 2 \(pid \d+\) took longer than [\d.]+ seconds? while loading the spec files, so it was sent SIGTERM\./)
         expect(messages).to include("3 examples, 0 failures, 1 error occurred outside of examples")
         expect(process.signals.map(&:first)).to eq(["TERM"])
       end
