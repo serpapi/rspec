@@ -1,13 +1,5 @@
-RSpec::Support.require_rspec_core "parallel/channel"
-RSpec::Support.require_rspec_core "parallel/remote_exception"
-RSpec::Support.require_rspec_core "parallel/worker_reporter"
-RSpec::Support.require_rspec_core "parallel/worker"
-RSpec::Support.require_rspec_core "parallel/sequencer"
-RSpec::Support.require_rspec_core "parallel/results"
-RSpec::Support.require_rspec_core "parallel/suite_index"
-RSpec::Support.require_rspec_core "parallel/worker_handle"
-RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
-RSpec::Support.require_rspec_core "parallel/coordinator"
+# The runner itself -- parallel/coordinator and the files it requires -- is
+# loaded once a run is going to fork workers, so that serial runs skip it.
 RSpec::Support.require_rspec_core "parallel/plan"
 
 module RSpec
@@ -39,6 +31,7 @@ module RSpec
         count = [requested, units.size].min
         return nil if count < 2
 
+        RSpec::Support.require_rspec_core "parallel/coordinator"
         Coordinator.new(runner, count).tap { |coordinator| coordinator.assign(example_groups, units) }
       end
 

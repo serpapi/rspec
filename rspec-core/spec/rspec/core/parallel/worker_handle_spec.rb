@@ -1,3 +1,5 @@
+require 'rspec/core/parallel/coordinator'
+
 module RSpec::Core::Parallel
   RSpec.describe WorkerHandle do
     it "closes the pipe it opened when the system refuses it the second one" do

@@ -29,6 +29,7 @@ module RSpec
           count = worker_count
           return unless count && count >= 2
 
+          RSpec::Support.require_rspec_core "parallel/coordinator"
           # Assigned first, so that workers forked before a `fork` that fails
           # are dismissed too.
           @coordinator = Coordinator.new(@runner, count)

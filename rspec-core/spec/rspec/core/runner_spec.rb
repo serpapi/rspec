@@ -1,4 +1,5 @@
 require 'rspec/core/drb'
+require 'rspec/core/parallel/coordinator'
 require 'support/runner_support'
 
 module RSpec::Core

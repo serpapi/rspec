@@ -1,3 +1,6 @@
+require 'rspec/core/parallel/coordinator'
+require 'rspec/support/spec/shell_out'
+
 module RSpec::Core
   RSpec.describe Parallel do
     let(:config) { RSpec.configuration }
@@ -291,6 +294,31 @@ module RSpec::Core
 
         Parallel.restore_signals("HUP" => "DEFAULT")
         expect(trap("HUP", "IGNORE")).to eq("DEFAULT")
+      end
+    end
+
+    describe "loading" do
+      include RSpec::Support::ShellOut
+
+      def run_in_new_process(args)
+        code = <<-RUBY
+          require "rspec/core"
+          require "stringio"
+          2.times { |i| RSpec.describe("G\#{i}") { it("passes") {} } }
+          status = RSpec::Core::Runner.run(["--options", File::NULL, *#{args.inspect}], $stderr, StringIO.new)
+          print [status, defined?(RSpec::Core::Parallel::Coordinator)].inspect
+        RUBY
+        without_env_vars("SPEC_OPTS") { run_ruby_with_current_load_path(code) }
+      end
+
+      it "leaves the runner unloaded in a serial run", :slow do
+        out, err, _status = run_in_new_process([])
+        expect([out, err]).to eq(["[0, nil]", ""])
+      end
+
+      it "loads the runner for a run that forks workers", :slow, :skip => !RSpec::Support::RubyFeatures.fork_supported? do
+        out, err, _status = run_in_new_process(%w[--parallel=2])
+        expect([out, err]).to eq(['[0, "constant"]', ""])
       end
     end
   end

@@ -1,3 +1,4 @@
+require 'rspec/core/parallel/coordinator'
 require 'support/aruba_support'
 require 'json'
 

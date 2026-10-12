@@ -1,3 +1,5 @@
+require 'rspec/core/parallel/coordinator'
+
 # Loaded here: the fake workers below are threads of this process, and Ruby
 # 3.0 warns ("loading in progress, circular require considered harmful") when
 # a thread requires a file another thread is loading, which fails this suite.

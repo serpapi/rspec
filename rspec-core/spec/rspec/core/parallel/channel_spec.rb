@@ -1,3 +1,5 @@
+require 'rspec/core/parallel/coordinator'
+
 module RSpec::Core::Parallel
   RSpec.describe Channel do
     let(:ends) { Channel.pipe }

@@ -1,3 +1,5 @@
+require 'rspec/core/parallel/coordinator'
+
 module RSpec::Core
   RSpec.describe Parallel::Plan do
     let(:config) { RSpec.configuration }

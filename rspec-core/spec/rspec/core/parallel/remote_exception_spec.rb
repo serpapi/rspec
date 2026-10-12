@@ -1,3 +1,5 @@
+require 'rspec/core/parallel/coordinator'
+
 module RSpec::Core::Parallel
   RSpec.describe RemoteException do
     include FormatterSupport

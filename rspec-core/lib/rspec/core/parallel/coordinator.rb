@@ -1,3 +1,13 @@
+RSpec::Support.require_rspec_core "parallel/channel"
+RSpec::Support.require_rspec_core "parallel/remote_exception"
+RSpec::Support.require_rspec_core "parallel/worker_reporter"
+RSpec::Support.require_rspec_core "parallel/worker"
+RSpec::Support.require_rspec_core "parallel/sequencer"
+RSpec::Support.require_rspec_core "parallel/results"
+RSpec::Support.require_rspec_core "parallel/suite_index"
+RSpec::Support.require_rspec_core "parallel/worker_handle"
+RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
+
 module RSpec
   module Core
     module Parallel
