@@ -172,8 +172,8 @@ module RSpec
         # @private
         def dump_threads(timeout)
           stderr = @stderr || $stderr
-          stderr.puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) did not exit within #{timeout} " \
-                      "seconds of finishing its last example group; aborting it. Threads at this point:"
+          stderr.puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) did not exit within " \
+                      "#{Parallel.seconds(timeout)} of finishing its last example group; aborting it. Threads at this point:"
           Thread.list.each do |thread|
             stderr.puts "  #{thread.inspect}#{' (this watchdog)' if thread.equal?(Thread.current)}"
             Array(thread.backtrace).each { |line| stderr.puts "    #{line}" }
