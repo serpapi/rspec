@@ -35,6 +35,16 @@ module RSpec::Core::Parallel
 
     around { |example| without_env_vars("TEST_ENV_NUMBER", &example) }
 
+    # A worker told to stop arms its exit watchdog, a thread that sleeps
+    # through `Parallel.sleep_running` for up to the shutdown timeout. Workers
+    # here are threads of this process, so it would outlive its example and
+    # call a later example's stubs of `Parallel.sleep` too.
+    around do |example|
+      threads = Thread.list
+      example.run
+      (Thread.list - threads).each { |thread| thread.kill.join(1) }
+    end
+
     describe "#test_env_number" do
       it "follows the parallel_tests convention: blank for the first worker, then the worker number" do
         expect(worker(1).test_env_number).to eq("")

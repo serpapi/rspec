@@ -85,6 +85,16 @@ module RSpec::Core::Parallel
 
     around { |example| without_env_vars("TEST_ENV_NUMBER", &example) }
 
+    # Fake workers are threads of this process, and one told to stop arms its
+    # exit watchdog, a thread sleeping through `Parallel.sleep_running` for up
+    # to the shutdown timeout: it would outlive its example and call a later
+    # example's stubs of `Parallel.sleep` too.
+    around do |example|
+      threads = Thread.list
+      example.run
+      (Thread.list - threads).each { |thread| thread.kill.join(1) }
+    end
+
     before do
       config.output_stream = output
       config.add_formatter("progress", output)
