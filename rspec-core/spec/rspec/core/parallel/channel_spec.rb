@@ -73,6 +73,21 @@ module RSpec::Core::Parallel
       expect { reader.drain }.to raise_error(Channel::ProtocolError, /Expected a frame length/)
     end
 
+    it "retries a read that a signal interrupted before it read anything" do
+      writer.send(:after_the_signal)
+      interrupted = false
+      allow(reader.io).to receive(:read_nonblock).and_wrap_original do |original, *args, **options|
+        unless interrupted
+          interrupted = true
+          raise Errno::EINTR
+        end
+        original.call(*args, **options)
+      end
+
+      expect(reader.drain.map(&:first)).to eq([:after_the_signal])
+      expect(interrupted).to be true
+    end
+
     describe "#receive" do
       it "blocks until a whole message is available" do
         thread = Thread.new do

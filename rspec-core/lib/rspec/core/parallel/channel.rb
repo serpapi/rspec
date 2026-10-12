@@ -113,15 +113,25 @@ module RSpec
             16.times do
               break if @eof
 
-              chunk = @io.read_nonblock(CHUNK_SIZE, :exception => false)
+              chunk = read_chunk
               case chunk
               when nil then @eof = true
               when :wait_readable then break
+              when :interrupted then next
               else
                 @bytes_read += chunk.bytesize
                 @buffer << chunk
               end
             end
+          end
+
+          # On macOS a read that waits for the pipe while the writer copies a
+          # large frame into it fails with EINTR when a signal arrives, such as
+          # the SIGCHLD of a worker exiting. Nothing was read, so it is retried.
+          def read_chunk
+            @io.read_nonblock(CHUNK_SIZE, :exception => false)
+          rescue Errno::EINTR
+            :interrupted
           end
 
           # Drops the frames already taken from the buffer: once per read
