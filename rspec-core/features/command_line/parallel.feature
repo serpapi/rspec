@@ -123,7 +123,7 @@ Feature: `--parallel` option
     And the stderr should contain "Threads at this point:"
     And the stderr should contain "join"
 
-  Scenario: With `--no-parallel-preload` every worker loads the spec files itself
+  Scenario: With `--no-parallel-preload` workers run the groups they loaded themselves
     Given a file named "spec/gamma_spec.rb" with:
       """ruby
       File.write("loaded_by_#{ENV.fetch('TEST_ENV_NUMBER', 'the coordinating process')}", "")
