@@ -362,6 +362,12 @@ module RSpec::Core::Parallel
         expect(Sequencer.group_aware_listeners?(reporter)).to be true
       end
 
+      it "is true for a custom formatter in a process that never loaded BaseFormatter" do
+        hide_const("RSpec::Core::Formatters::BaseFormatter")
+        reporter.register_listener(Class.new { def example_group_started(_); end }.new, :example_group_started)
+        expect(Sequencer.group_aware_listeners?(reporter)).to be true
+      end
+
       it "ignores RSpec's own profiler" do
         reporter.register_listener(RSpec::Core::Profiler.new, :example_group_started, :example_group_finished)
         expect(Sequencer.group_aware_listeners?(reporter)).to be false

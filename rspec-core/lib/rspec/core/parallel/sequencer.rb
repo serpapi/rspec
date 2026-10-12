@@ -72,9 +72,11 @@ module RSpec
         #   current group and RSpec's profiler keeps its own per-group tally,
         #   so neither needs sequencing.
         def self.group_aware_listeners?(reporter)
+          # Not loaded when every formatter is a custom one that does not inherit it.
+          base_formatter = Formatters::BaseFormatter if defined?(Formatters::BaseFormatter)
           [:example_group_started, :example_group_finished].any? do |event|
             reporter.registered_listeners(event).any? do |listener|
-              !listener.is_a?(Profiler) && listener.method(event).owner != Formatters::BaseFormatter
+              !listener.is_a?(Profiler) && listener.method(event).owner != base_formatter
             end
           end
         end
