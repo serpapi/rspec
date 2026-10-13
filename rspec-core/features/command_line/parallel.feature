@@ -27,7 +27,9 @@ Feature: `--parallel` option
 
   A worker that crashes fails the example it was running, and the examples of
   its group it had not started run in another worker. Code that calls `exit`
-  ends the run with that status, as it does in a serial run.
+  ends the run with that status, as it does in a serial run. A top-level group
+  tagged `:parallel_split => N` runs as N parts in different workers, which
+  helps when it is the longest one of the suite.
 
   `--parallel` needs `fork`. Where it is not available (Windows, JRuby), or
   when `TEST_ENV_NUMBER` is already set because another tool is running RSpec
@@ -158,6 +160,23 @@ Feature: `--parallel` option
     When I run `rspec --parallel=2 --order defined`
     Then the exit status should be 3
     And the output should contain "is ending the run: the code it ran called `exit` or `abort` (status 3)"
+
+  Scenario: A long group tagged `:parallel_split` runs as parts in several workers
+    Given a file named "spec/long_spec.rb" with:
+      """ruby
+      RSpec.describe "Long", :parallel_split => 2 do
+        4.times do |i|
+          it "runs part of the group #{i}" do
+            File.write("ran_#{i}_in_#{Process.pid}", "")
+            sleep 0.2
+          end
+        end
+      end
+      """
+    When I run `rspec --parallel=3 --order defined spec/long_spec.rb spec/beta_spec.rb`
+    Then the exit status should be 0
+    And the output should contain "6 examples, 0 failures"
+    And the files the examples wrote should name 2 processes
 
   Scenario: With `--no-parallel-preload` workers run the groups they loaded themselves
     Given a file named "spec/gamma_spec.rb" with:

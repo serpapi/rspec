@@ -96,16 +96,17 @@ module RSpec
       end
 
       # The units to dispatch: top-level groups with at least one example to
-      # run, longest first when a previous run recorded their timings in the
-      # example status persistence file, so that the slowest unit is never
-      # the one that starts last. Units without timings go first because
-      # nothing is known about them.
+      # run -- or, for a group with `parallel_split` metadata, that many
+      # parts of it -- longest first when a previous run recorded their
+      # timings in the example status persistence file, so that the slowest
+      # unit is never the one that starts last. Units without timings go
+      # first because nothing is known about them.
       # @return [Array<Unit>]
       # @private
       def self.units_for(example_groups, configuration)
         run_times = recorded_run_times(configuration)
         units = example_groups.flat_map do |group|
-          group.descendant_filtered_examples.empty? ? [] : [Unit.new(group)]
+          group.descendant_filtered_examples.empty? ? [] : split(group, run_times)
         end
         return units if run_times.empty?
 
@@ -117,6 +118,72 @@ module RSpec
 
         unknown, known = units.partition { |unit| !timed.key?(unit) }
         unknown + known.each_with_index.sort_by { |unit, index| [-timed[unit], index] }.map(&:first)
+      end
+
+      # The orderings that order part of a group's examples the way they
+      # order all of them.
+      SPLITTABLE_ORDERINGS = [Ordering::Identity, Ordering::Random, Ordering::RecentlyModified].freeze
+
+      # A group tagged `parallel_split: N` is run as N parts -- no more than it
+      # has examples -- each a slice of the order its examples run in,
+      # balanced by their recorded run times (by their number, without).
+      # @return [Array<Unit>]
+      # @private
+      def self.split(group, run_times)
+        parts = group.metadata[:parallel_split]
+        return [Unit.new(group)] unless parts
+
+        unless parts.is_a?(Integer) && parts >= 2
+          RSpec.warning "Ignoring `parallel_split: #{parts.inspect}` on #{group.description} (#{group.location}): it is " \
+                        "the number of parts to run the group's examples in, at least 2", :call_site => nil
+          return [Unit.new(group)]
+        end
+
+        unless group.descendants.all? { |each| SPLITTABLE_ORDERINGS.any? { |kind| each.ordering_strategy.is_a?(kind) } }
+          RSpec.warning "Not splitting #{group.description} (#{group.location}) into parts: it orders examples with a " \
+                        "custom ordering, which may not order part of them the way it orders all of them",
+                        :call_site => nil
+          return [Unit.new(group)]
+        end
+
+        ids = execution_order(group)
+        return [Unit.new(group)] if ids.size < 2
+
+        slices(ids, [parts, ids.size].min, run_times).map { |slice| Unit.new(group, slice) }
+      end
+
+      # @return [Array<String>] the ids of the group's examples in the order a
+      #   run of the group runs them in
+      # @private
+      def self.execution_order(group)
+        strategy = group.ordering_strategy
+        strategy.order(group.filtered_examples).map(&:id) +
+          strategy.order(group.children).flat_map { |child| execution_order(child) }
+      end
+
+      # Cuts `ids` into `count` consecutive, non-empty slices of about the
+      # same total run time -- each example goes to the slice its midpoint
+      # falls in -- where an example without a recorded time counts as the
+      # mean of those with one, and with no time recorded at all every
+      # example counts the same.
+      # @private
+      def self.slices(ids, count, run_times)
+        recorded = ids.map { |id| run_times[id] }.compact
+        mean = recorded.empty? ? 0.0 : recorded.sum / recorded.size
+        weights = ids.map { |id| run_times.fetch(id, mean) }
+        weights = Array.new(ids.size, 1.0) unless weights.sum > 0
+        total = weights.sum
+
+        slices = [[]]
+        done = 0.0
+        ids.each_with_index do |id, index|
+          more = count - slices.size
+          wanted = ((done + (weights[index] / 2.0)) * count / total).floor
+          slices << [] if !slices.last.empty? && more > 0 && (wanted >= slices.size || ids.size - index <= more)
+          slices.last << id
+          done += weights[index]
+        end
+        slices
       end
 
       # @private

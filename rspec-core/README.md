@@ -403,6 +403,29 @@ started ignoring (`nohup`), or that your suite installs a handler for, is left
 alone. Time the whole run spends stopped (Ctrl-Z) or the machine asleep does
 not count towards these timeouts.
 
+A run is never shorter than its longest top-level example group, which a
+single worker runs. `--profile` shows the slowest groups; tag one whose
+examples can run at the same time in different processes with the number of
+parts to run it as, and workers take the parts like any other group:
+
+```ruby
+RSpec.describe Pricing, :parallel_split => 4 do
+  # ...
+end
+```
+
+Each part is a slice of the order the group's examples run in, of about the
+same total run time when a previous run recorded run times in the
+`example_status_persistence_file_path` file (of the same number of examples
+otherwise), and runs as `rspec spec/pricing_spec.rb[1:2,1:3]` would:
+`before(:context)` and `after(:context)` hooks run once per part, so a group
+that sets up something expensive or shared in them may be better left whole.
+There are no more parts than examples, the number of parts does not depend on
+the machine, and a group whose examples (or those of a group in it) use a
+custom ordering is not split, with a warning. With a formatter that follows
+example groups (documentation, HTML), each part reads as a block of its own,
+under the group's description; `--profile` adds up the parts.
+
 `--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
 already set because another tool is running RSpec in parallel, RSpec prints a
 warning and runs serially. When the system refuses a worker -- too many open

@@ -136,6 +136,89 @@ module RSpec::Core
         expect(Parallel.units_for([all[1], empty, all[0], all[2]], config).map(&:group)).to eq([all[1], all[0], all[2]])
       end
 
+      describe "of a group tagged `parallel_split: N`" do
+        def tagged(parts, count=6, &block)
+          RSpec.describe("Tagged", :parallel_split => parts) do
+            count.times { |i| it("e#{i}") {} }
+            instance_exec(&block) if block
+          end
+        end
+
+        it "runs it as N parts, each a consecutive slice of the order its examples run in" do
+          config.ordering_registry.register(:global, Ordering::Identity.new)
+          group = tagged(3) { context("nested") { it("n0") {} } }
+          ids = group.descendant_filtered_examples.map(&:id)
+
+          units = Parallel.units_for([group, groups(1).first], config)
+
+          expect(units.first(3).map(&:group)).to all(eq(group))
+          expect(units.first(3).map(&:example_ids)).to eq([ids[0, 2], ids[2, 3], ids[5, 2]])
+          expect(units.last.example_ids).to be_nil
+        end
+
+        it "slices the order a random ordering runs the examples in, which orders any part of them the same way" do
+          config.seed = 1234
+          group = tagged(2)
+          order = Parallel.execution_order(group)
+
+          parts = Parallel.units_for([group], config).map(&:example_ids)
+
+          expect(parts.flatten).to eq(order)
+          expect(order).not_to eq(group.examples.map(&:id))
+          expect(config.ordering_registry.fetch(:global).order(group.examples.select { |e| parts.first.include?(e.id) }).map(&:id)).to eq(parts.first)
+        end
+
+        it "makes no more parts than there are examples" do
+          expect(Parallel.units_for([tagged(8, 3)], config).map(&:example_ids).map(&:size)).to eq([1, 1, 1])
+        end
+
+        it "leaves a group with a single example whole" do
+          expect(Parallel.units_for([tagged(4, 1)], config).map(&:example_ids)).to eq([nil])
+        end
+
+        [true, 1, 0, "3", 2.5].each do |value|
+          it "warns and leaves the group whole for `parallel_split: #{value.inspect}`" do
+            expect(RSpec).to receive(:warning).with(/Ignoring `parallel_split: #{Regexp.escape(value.inspect)}` on Tagged \(.+\): it is the number of parts/, :call_site => nil)
+            expect(Parallel.units_for([tagged(value)], config).map(&:example_ids)).to eq([nil])
+          end
+        end
+
+        it "warns and leaves the group whole when it, or a group in it, uses a custom ordering" do
+          config.register_ordering(:reversed) { |items| items.reverse }
+          group = tagged(2) { context("nested", :order => :reversed) { it("n0") {} } }
+          expect(RSpec).to receive(:warning).with(/Not splitting Tagged \(.+\) into parts: it orders examples with a custom ordering/, :call_site => nil)
+
+          expect(Parallel.units_for([group], config).map(&:example_ids)).to eq([nil])
+        end
+
+        context "with run times recorded", :isolated_directory do
+          before { config.example_status_persistence_file_path = "statuses.txt" }
+
+          def record(times)
+            rows = times.map { |id, time| "#{id} | passed | #{time} |\n" }.join
+            File.write("statuses.txt", "example_id | status | run_time |\n---------- | ------ | -------- |\n#{rows}")
+          end
+
+          it "balances the parts by them, counting an example without one as the mean of the others" do
+            config.ordering_registry.register(:global, Ordering::Identity.new)
+            group = tagged(2, 4)
+            ids = group.examples.map(&:id)
+            record(ids[0] => "3 seconds", ids[1] => "1 second", ids[2] => "1 second")
+
+            expect(Parallel.units_for([group], config).map(&:example_ids)).to eq([[ids[0]], ids[1, 3]])
+          end
+
+          it "balances them by the number of examples when every recorded time is zero" do
+            config.ordering_registry.register(:global, Ordering::Identity.new)
+            group = tagged(2, 4)
+            ids = group.examples.map(&:id)
+            record(ids.to_h { |id| [id, "0 seconds"] })
+
+            expect(Parallel.units_for([group], config).map(&:example_ids)).to eq([ids[0, 2], ids[2, 2]])
+          end
+        end
+      end
+
       context "with timings recorded in the example status persistence file", :isolated_directory do
         let(:all) { groups(4) }
 

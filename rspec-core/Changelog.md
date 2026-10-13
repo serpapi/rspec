@@ -21,14 +21,15 @@ Enhancements:
   after code under test called `exit`), and a worker that crashes fails the example it was
   running instead of taking the run down, while the examples of its group it had not
   started run in another worker. Code that calls `exit` ends the run with that status, as
-  it does serially. A run stopped
-  with SIGTERM or SIGHUP says which example each worker was running and for how long. With
-  `--no-parallel-preload` (`RSpec::Core::Configuration#parallel_preload`) the workers are
-  forked before the spec files are loaded and each loads them itself, so nothing the spec
-  files do while loading is shared with the workers; a worker that does not load the
-  examples the coordinating process has is not used. Where `fork` is unavailable the run
-  is serial with a warning. `--bisect` runs serially, and the reproduction command it
-  prints now ends with `--no-parallel`.
+  it does serially. A top-level group tagged `:parallel_split => N` runs as N parts in
+  different workers. A run stopped with SIGTERM or SIGHUP says which example each worker
+  was running and for how long. With `--no-parallel-preload`
+  (`RSpec::Core::Configuration#parallel_preload`) the workers are forked before the spec
+  files are loaded and each loads them itself, so nothing the spec files do while loading
+  is shared with the workers; a worker that does not load the examples the coordinating
+  process has is not used. Where `fork` is unavailable the run is serial with a warning.
+  `--bisect` runs serially, and the reproduction command it prints now ends with
+  `--no-parallel`.
   (Illia Zub)
 * Load and filter large suites faster by no longer looking up the working directory once per
   example and example group, which took seconds on a suite of 150,000 examples, and more when

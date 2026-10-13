@@ -2,7 +2,10 @@ require 'rspec/core/parallel/coordinator'
 require 'support/aruba_support'
 require 'json'
 
-RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Support::RubyFeatures.fork_supported? do
+# The longest group of rspec-core's suite: under `--parallel` it runs as parts in
+# several workers (each has its own aruba directory).
+RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
+               :skip => !RSpec::Support::RubyFeatures.fork_supported? do
   include_context "aruba support"
 
   # The coordinator refuses to nest inside another parallel worker, which is
@@ -598,6 +601,52 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
       expect(dumps).not_to be_empty
       expect(dumps).to all(include("of stopping because the code it ran called `exit` or `abort` (status 4); aborting it."))
       cd('.') { expect(File).not_to exist('ran') }
+    end
+  end
+
+  describe 'a group tagged `parallel_split: N`' do
+    def write_split_suite(extra="")
+      write_file_formatted 'spec/split_spec.rb', "
+        RSpec.describe 'Split', :parallel_split => 3 do
+          before(:context) { File.write(\"context_\#{Process.pid}_\#{rand(1_000_000)}\", '') }
+          6.times { |i| it(\"e\#{i}\") { File.write(\"example_\#{i}_\#{Process.pid}\", ''); sleep 0.1 } }
+          context 'nested' do
+            2.times { |i| it(\"n\#{i}\") { File.write(\"nested_\#{i}_\#{Process.pid}\", '') } }
+          end
+          #{extra}
+        end
+        RSpec.describe('Whole') { it('runs once') { } }
+      "
+    end
+
+    it 'runs it as that many parts in different workers, every example once, with the counts of a serial run' do
+      write_split_suite
+      run_rspec "--order defined --format json --out serial.json"
+      cd('.') { Dir['{context,example,nested}_*'].each { |file| File.delete(file) } }
+
+      run_rspec "--order defined --parallel=3 --format json --out parallel.json --format progress"
+
+      expect(last_cmd_exit_status).to eq(0)
+      cd('.') do
+        serial, parallel = %w[serial.json parallel.json].map { |file| JSON.parse(File.read(file)) }
+        ids = parallel['examples'].map { |example| example['id'] }
+        expect(ids.size).to eq(ids.uniq.size)
+        expect(ids.sort).to eq(serial['examples'].map { |example| example['id'] }.sort)
+        expect(parallel['summary']).to include('example_count' => 9, 'failure_count' => 0)
+        expect(Dir['context_*'].size).to eq(3)
+        pids = Dir['{example,nested}_*'].map { |file| file[/\d+\z/] }
+        expect(pids.uniq.size).to be >= 2
+      end
+    end
+
+    it 'runs the rest of a part whose worker dies in another worker' do
+      write_split_suite("context('crashing') { it('dies') { exit!(7) }; it('after the crash') { File.write('after_crash', '') } }")
+
+      run_rspec "--order defined --parallel=2"
+
+      expect(last_cmd_exit_status).to eq(1)
+      expect(last_cmd_stdout).to include("11 examples, 1 failure", "Split crashing dies")
+      cd('.') { expect(File).to exist('after_crash') }
     end
   end
 

@@ -64,6 +64,7 @@ module RSpec
           @visible = nil
           @visible_groups = []
           @last_delivery_at = @clock.call
+          @group_durations = {}
           @stats = { :queued => 0, :peak_queued => 0, :queued_bytes => 0, :peak_queued_bytes => 0, :flushes => 0 }
         end
 
@@ -216,7 +217,7 @@ module RSpec
             @reporter.example_group_finished(event.target)
             stream.open_groups.pop
             @visible_groups.pop
-            @reporter.record_example_group_duration(event.target, event.payload) if event.payload
+            record_duration(event.target, event.payload) if event.payload
           when :example_started
             @reporter.example_started(event.target)
           when :example_finished
@@ -224,6 +225,13 @@ module RSpec
             @reporter.example_finished(event.target)
             @reporter.__send__(:"example_#{event.target.execution_result.status}", event.target)
           end
+        end
+
+        # Measured in the worker that ran it; a group split across workers
+        # took as long as its parts did together.
+        def record_duration(group, duration)
+          total = @group_durations[group] = @group_durations.fetch(group, 0.0) + duration
+          @reporter.record_example_group_duration(group, total)
         end
 
         def deliver_context_free(event)

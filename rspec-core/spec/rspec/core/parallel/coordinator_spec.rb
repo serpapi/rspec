@@ -75,7 +75,7 @@ module RSpec::Core::Parallel
     def teardown_mocks_for_rspec; end
   end
 
-  RSpec.describe Coordinator do
+  RSpec.describe Coordinator, :parallel_split => 2 do
     let(:config) { RSpec.configuration }
     let(:world) { RSpec.world }
     let(:output) { StringIO.new }

@@ -105,6 +105,17 @@ module RSpec::Core::Parallel
         expect(applied).to eq([ex(g1, "a")])
       end
 
+      it "records the parts of a group split across workers as taking as long as they did together" do
+        seq = sequencer(false)
+        recorded = []
+        allow(reporter).to receive(:record_example_group_duration) { |group, total| recorded << [group, total] }
+
+        run_group(seq, 1, g1, 1.5)
+        run_group(seq, 2, g1, 2.0)
+
+        expect(recorded).to eq([[g1, 1.5], [g1, 3.5]])
+      end
+
       it "records the worker-measured duration of top-level groups for the profiler" do
         seq = sequencer(false)
         expect(reporter).to receive(:record_example_group_duration).with(g1, 1.5)
