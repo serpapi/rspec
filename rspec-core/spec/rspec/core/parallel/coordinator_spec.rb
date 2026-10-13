@@ -188,10 +188,23 @@ module RSpec::Core::Parallel
                  :exit => lambda { |status|
                    record_exit.call(status)
                    sleep if behaviour == :never_exits
+                   exit_once_sent_term(results) if behaviour == :exits_once_sent_term
                  },
                  :exit_now => record_exit,
                  :trap => lambda { |*| },
                  :watch_coordinator => false).run
+    end
+
+    # Its teardown hangs until it is sent SIGTERM, which an `after(:suite)`
+    # hook takes by calling `exit 0` -- and hangs again.
+    def exit_once_sent_term(results)
+      sleep 0.01 until @process.signals.any? { |name, _pid| name == 'TERM' }
+      begin
+        results.send([:exiting, "an `after(:suite)` hook called `exit` or `abort` (status 0)", 0])
+      rescue Errno::EPIPE, IOError
+        nil # as Worker#send_exiting does once nothing reads it
+      end
+      sleep
     end
 
     # A fake worker killed with a signal is gone once its thread has died,
@@ -463,6 +476,24 @@ module RSpec::Core::Parallel
         expect(process.signals.map(&:first)).to eq(%w[TERM KILL])
         expect(messages).to include("still alive 0.1 seconds after SIGKILL; giving up on it")
         expect(RSpec::Core::Parallel.monotonic_time - started).to be < 5
+      end
+
+      it "does not let an `exit` it calls once sent SIGTERM decide the run's exit status" do
+        config.error_exit_code = 3
+        worker_behaviours[1] = :exits_once_sent_term
+        process = FakeProcess.new(["TERM"])
+
+        # Rescued: an `exit` deciding the status would end this suite here.
+        exit_code =
+          begin
+            coordinator([passing_group("A"), passing_group("B")], 1, short_graces.merge(:process => process)).run
+          rescue SystemExit => e
+            "exit(#{e.status})"
+          end
+
+        expect(exit_code).to eq(3)
+        expect(process.signals.map(&:first)).to eq(%w[TERM KILL])
+        expect(messages).not_to include("ending the run")
       end
     end
 
@@ -937,6 +968,7 @@ module RSpec::Core::Parallel
         /^Parallel worker 2 \(pid \d+\) was running #{Regexp.escape(stuck.examples.first.id)} \(Stuck sleeps\) for [\d.]+ seconds?\.$/
       )
       expect(messages).to match(/^2 examples, 0 failures(, .+)?$/)
+      expect(messages).not_to include("outside of examples")
       expect(stuck.examples.first.execution_result.status).to be_nil
       expect(RSpec::Core::Parallel).to have_received(:restore_signals).with("TERM" => "DEFAULT")
     end

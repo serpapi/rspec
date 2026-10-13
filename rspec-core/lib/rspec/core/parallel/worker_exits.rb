@@ -43,6 +43,8 @@ module RSpec
             error("#{worker.description} did not exit within #{timeout} of finishing its last example group (its " \
                   "`after(:suite)` hooks or `at_exit` handlers may be stuck), so it was sent SIGTERM. Raise " \
                   "`config.parallel_shutdown_timeout` if it legitimately needs longer.")
+            # Nothing it sends from now on is read: an `exit` in how it takes SIGTERM must not decide the status.
+            worker.results.close
           elsif worker.loading
             lost(worker, "took longer than #{Parallel.seconds(@load_allowance)}", SENT_TERM)
           elsif worker.quit_sent
@@ -72,20 +74,20 @@ module RSpec
           worker.exit_cause ||= cause
           teardown = now + @configuration.parallel_shutdown_timeout + @watchdog_grace
           worker.deadline = teardown unless worker.escalation || (worker.deadline && worker.deadline >= teardown)
-          ended_by_exit(worker, exit_status) if exit_status
+          ended_by_exit(worker, exit_status, cause) if exit_status
         end
 
         # RSpec does not rescue `SystemExit`, so in a serial run `exit` ends
         # the run: here too no example starts from now on, busy workers stop
         # after the one they are running and the run exits with that status
         # -- the first one, if more workers call `exit`.
-        def ended_by_exit(worker, exit_status)
+        def ended_by_exit(worker, exit_status, cause)
           worker.called_exit = exit_status
           # Leaving anyway: it is not asked to stop.
           worker.quit_sent = true
           if @exit_status
             # A later `exit` in the same process decides its status.
-            @exit_status = exit_status if worker.equal?(@exit_worker)
+            replace_exit_status(worker, exit_status, cause) if worker.equal?(@exit_worker)
             return
           end
 
@@ -96,6 +98,13 @@ module RSpec
                  "#{" in #{running.full_description} (#{running.location})" if running}. As in a serial run, no " \
                  "further examples start and the run exits with status #{exit_status}."
           request_quit
+        end
+
+        def replace_exit_status(worker, exit_status, cause)
+          return if exit_status == @exit_status
+
+          @exit_status = exit_status
+          report "#{worker.description}: then #{cause}, so the run exits with status #{exit_status}." unless @exit_spoiled
         end
 
         # The worker can no longer be relied on, and nothing it sends from now

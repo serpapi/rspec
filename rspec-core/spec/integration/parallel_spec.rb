@@ -538,6 +538,9 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       run_rspec "--order defined --parallel=2"
 
       expect(last_cmd_exit_status).to eq(5)
+      expect(last_cmd_stdout).to match(
+        /Parallel worker \d \(pid \d+\): then an `after\(:suite\)` hook called `exit` or `abort` \(status 5\), so the run exits with status 5\./
+      )
       expect(last_cmd_stdout).not_to include("An error occurred in a parallel worker")
     end
 
