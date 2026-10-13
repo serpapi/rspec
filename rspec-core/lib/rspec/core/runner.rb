@@ -76,6 +76,7 @@ module RSpec
         @options       = options
         @configuration = configuration
         @world         = world
+        @parallel_plan = nil
       end
 
       # Configures and runs a spec suite.
@@ -83,19 +84,18 @@ module RSpec
       # @param err [IO] error stream
       # @param out [IO] output stream
       def run(err, out)
-        parallel = Parallel::Plan.new(self)
-        setup(err, out) { parallel.before_loading }
+        setup(err, out) { parallel_plan&.before_loading }
         return @configuration.reporter.exit_early(exit_code) if RSpec.world.wants_to_quit
 
         example_groups = @world.ordered_example_groups
-        coordinator = parallel.coordinator_for(example_groups)
+        coordinator = parallel_plan&.coordinator_for(example_groups)
 
         (coordinator ? coordinator.run : run_specs(example_groups)).tap do
           persist_example_statuses
         end
       ensure
         # Workers forked before loading that the run did not get to use.
-        parallel&.dismiss
+        @parallel_plan&.dismiss
       end
 
       # Wires together the various configuration objects and state holders.
@@ -208,6 +208,16 @@ module RSpec
       end
 
     private
+
+      # Only a run configured to be parallel -- before the spec files load or
+      # by them -- loads the parallel runner.
+      def parallel_plan
+        return @parallel_plan if @parallel_plan
+        return nil if @configuration.parallel_workers.nil? && @configuration.parallel_preload?
+
+        RSpec::Support.require_rspec_core "parallel"
+        @parallel_plan = Parallel::Plan.new(self)
+      end
 
       def persist_example_statuses
         return if @configuration.dry_run

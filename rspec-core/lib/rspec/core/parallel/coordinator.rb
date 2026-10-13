@@ -1,3 +1,4 @@
+RSpec::Support.require_rspec_core "parallel"
 RSpec::Support.require_rspec_core "parallel/channel"
 RSpec::Support.require_rspec_core "parallel/remote_exception"
 RSpec::Support.require_rspec_core "parallel/worker_reporter"

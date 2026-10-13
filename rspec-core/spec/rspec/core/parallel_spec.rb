@@ -389,19 +389,19 @@ module RSpec::Core
           require "stringio"
           2.times { |i| RSpec.describe("G\#{i}") { it("passes") {} } }
           status = RSpec::Core::Runner.run(["--options", File::NULL, *#{args.inspect}], $stderr, StringIO.new)
-          print [status, defined?(RSpec::Core::Parallel::Coordinator)].inspect
+          print [status, defined?(RSpec::Core::Parallel::Coordinator), defined?(RSpec::Core::Parallel)].inspect
         RUBY
         without_env_vars("SPEC_OPTS") { run_ruby_with_current_load_path(code) }
       end
 
-      it "leaves the runner unloaded in a serial run", :slow do
+      it "leaves the parallel runner unloaded in a serial run", :slow do
         out, err, _status = run_in_new_process([])
-        expect([out, err]).to eq(["[0, nil]", ""])
+        expect([out, err]).to eq(["[0, nil, nil]", ""])
       end
 
       it "loads the runner for a run that forks workers", :slow, :skip => !RSpec::Support::RubyFeatures.fork_supported? do
         out, err, _status = run_in_new_process(%w[--parallel=2])
-        expect([out, err]).to eq(['[0, "constant"]', ""])
+        expect([out, err]).to eq(['[0, "constant", "constant"]', ""])
       end
     end
   end

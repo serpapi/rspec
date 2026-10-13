@@ -368,6 +368,7 @@ module RSpec::Core
           RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
           RSpec.describe("group 2") { example("passing") { expect(1).to eq(1) } }
           allow(config).to receive(:load_spec_files)
+          config.parallel_workers = 2
           coordinator = instance_double(Parallel::Coordinator, :run => 17)
           expect(Parallel).to receive(:coordinator_for).with(an_instance_of(Runner), world.ordered_example_groups).and_return(coordinator)
           config.example_status_persistence_file_path = "statuses.txt"
@@ -379,10 +380,29 @@ module RSpec::Core
           expect(runner.run(err, out)).to eq(17)
         end
 
+        it 'plans no parallel run unless one is configured' do
+          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+          allow(config).to receive(:load_spec_files)
+          expect(Parallel::Plan).not_to receive(:new)
+
+          expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
+        end
+
+        it 'plans a parallel run that the spec files configure, once they have loaded' do
+          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+          allow(config).to receive(:load_spec_files) { config.parallel_workers = 2 }
+          expect(Parallel).to receive(:coordinator_for).and_return(nil)
+
+          expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
+        end
+
         context 'with a parallel plan' do
           let(:plan) { instance_double(Parallel::Plan, :before_loading => nil, :dismiss => nil) }
 
-          before { allow(Parallel::Plan).to receive(:new).and_return(plan) }
+          before do
+            config.parallel_workers = 2
+            allow(Parallel::Plan).to receive(:new).and_return(plan)
+          end
 
           it 'lets it fork workers before the spec files load, then hands it the groups, and dismisses what it did not use' do
             RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
