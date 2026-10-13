@@ -527,7 +527,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
           /Parallel worker \d \(pid \d+\) is ending the run: the code it ran called `exit` or `abort` \(status #{status}\) in Exits exits \(\.\/spec\/exit_spec\.rb:6\)\. As in a serial run, no further examples start and the run exits with status #{status}\.$/
         )
         expect(last_cmd_stdout[/^(\d+) examples?/, 1].to_i).to be < 22
-        expect(last_cmd_stdout).to match(/^\d+ examples?, 0 failures$/)
+        expect(last_cmd_stdout).to match(/^\d+ examples?, 0 failures(, .+)?$/)
         cd('.') { expect(File).not_to exist('ran_after_exit') }
       end
     end

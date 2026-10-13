@@ -148,6 +148,17 @@ module RSpec::Core::Parallel
       results.send([:exiting, "it received SIGHUP", nil])
     end
 
+    # Dies as it asks for its second job, as a process killed while it waits
+    # for work would.
+    def die_on_second_job(jobs)
+      asked = 0
+      jobs.define_singleton_method(:receive) do
+        asked += 1
+        Thread.current.kill if asked == 2
+        super()
+      end
+    end
+
     # What a worker forked before loading reports once it has loaded the spec
     # files: by default, the examples this process has.
     def report_loaded(results, behaviour)
@@ -166,6 +177,7 @@ module RSpec::Core::Parallel
     end
 
     def run_fake_worker(number, jobs, results, behaviour, &record_exit)
+      die_on_second_job(jobs) if behaviour == :dies_between_groups
       worker_config = RSpec::Core::Configuration.new
       worker_config.parallel_shutdown_timeout = 60
       Thread.current[:fake_worker_world] = RSpec::Core::World.new(worker_config)
@@ -390,6 +402,26 @@ module RSpec::Core::Parallel
         expect(messages).to include("3 examples, 2 failures", "rspec #{crashing.examples.first.location_rerun_argument}")
         expect(messages).not_to include("outside of examples")
       end
+    end
+
+    it "reports a worker that exits between groups, while it waits for a busy one, as an error of the run" do
+      worker_behaviours[1] = :dies_between_groups
+      reported = output
+      busy = RSpec.describe("Busy") do
+        it("passes once worker 1 is reported lost") do
+          give_up_at = RSpec::Core::Parallel.monotonic_time + 10
+          sleep 0.01 until reported.string.include?("between example groups") || RSpec::Core::Parallel.monotonic_time > give_up_at
+        end
+      end
+      groups = [passing_group("A"), busy]
+      config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+      exit_code = coordinator(groups).run
+
+      expect(exit_code).to eq(config.failure_exit_code)
+      expect(groups.map { |group| group.examples.first.execution_result.status }).to eq([:passed, :passed])
+      expect(messages).to match(/Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) between example groups\./)
+      expect(messages).to include("2 examples, 0 failures, 1 error occurred outside of examples")
     end
 
     # A single worker, so that no well-behaved one can miss a deadline this
@@ -904,7 +936,7 @@ module RSpec::Core::Parallel
       expect(messages).to match(
         /^Parallel worker 2 \(pid \d+\) was running #{Regexp.escape(stuck.examples.first.id)} \(Stuck sleeps\) for [\d.]+ seconds?\.$/
       )
-      expect(messages).to match(/^2 examples, 0 failures$/)
+      expect(messages).to match(/^2 examples, 0 failures(, .+)?$/)
       expect(stuck.examples.first.execution_result.status).to be_nil
       expect(RSpec::Core::Parallel).to have_received(:restore_signals).with("TERM" => "DEFAULT")
     end
