@@ -225,6 +225,10 @@ module RSpec::Core::Parallel
     end
 
     describe "leaving its job loop" do
+      # JRuby's `Example#run` rescues `SystemExit` (see example.rb), so there,
+      # serially too, `exit` in an example fails it rather than ending the run.
+      jruby_rescues_exit = RSpec::Support::Ruby.jruby? && "JRuby's Example#run rescues SystemExit"
+
       def leaving_frames
         frames.select { |frame| frame.first == :exiting }
       end
@@ -246,7 +250,7 @@ module RSpec::Core::Parallel
         expect(leaving_frames).to eq([[:exiting, "the code it ran called `exit` or `abort` (status 4)", 4]])
       end
 
-      it "says which status the code it ran called `exit` with in an example, and runs nothing after it" do
+      it "says which status the code it ran called `exit` with in an example, and runs nothing after it", :skip => jruby_rescues_exit do
         RSpec.configuration.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
         ran = []
         exiting = RSpec.describe("Exits") do
@@ -258,6 +262,7 @@ module RSpec::Core::Parallel
                               :trap => lambda { |*| }, :watch_coordinator => false)
         allow(instance).to receive(:arm_watchdog)
         jobs.last.send([:run, 0, exiting.id])
+        jobs.last.send([:stop])
 
         expect { instance.run }.to raise_error(SystemExit) { |error| expect(error.status).to eq(3) }
 
@@ -278,7 +283,7 @@ module RSpec::Core::Parallel
         expect(leaving_frames).to eq([[:exiting, nil, nil], [:exiting, "an `after(:suite)` hook called `exit` or `abort` (status 5)", 5]])
       end
 
-      it "says so again when an after(:suite) hook calls exit with another status than the example did" do
+      it "says so again when an after(:suite) hook calls exit with another status than the example did", :skip => jruby_rescues_exit do
         RSpec.configuration.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
         exiting = RSpec.describe("Exits") { it("exits") { exit 4 } }
         instance = Worker.new(2, [Unit.new(exiting)], jobs.first, results.last,
@@ -287,6 +292,7 @@ module RSpec::Core::Parallel
         allow(instance).to receive(:arm_watchdog)
         RSpec.configuration.after(:suite) { exit 5 }
         jobs.last.send([:run, 0, exiting.id])
+        jobs.last.send([:stop])
 
         expect { instance.run }.to raise_error(SystemExit) { |error| expect(error.status).to eq(5) }
 
