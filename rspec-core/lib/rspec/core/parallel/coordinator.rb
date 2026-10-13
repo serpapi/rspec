@@ -369,6 +369,7 @@ module RSpec
         def escalate(worker)
           case worker.escalation
           when nil
+            spoil_exit
             overdue(worker)
             worker.state = :terminating
             worker.signal(@process, 'TERM', :term, now + @term_grace)
@@ -384,6 +385,7 @@ module RSpec
 
         # Counted as an error outside of examples, like a failing suite hook.
         def error(text)
+          spoil_exit
           @configuration.reporter.notify_non_example_exception(WorkerError.new(text), 'An error occurred in a parallel worker.',
                                                                :failure_lines => [text])
         end

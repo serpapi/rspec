@@ -34,7 +34,6 @@ module RSpec
         def overdue(worker)
           timeout = Parallel.seconds(@configuration.parallel_shutdown_timeout)
           if worker.called_exit
-            @exit_spoiled = true
             error("#{worker.description} did not exit within #{timeout} of ending the run because " \
                   "#{worker.exit_cause} (its `after(:suite)` hooks or `at_exit` handlers may be stuck), so it was " \
                   "sent SIGTERM. Raise `config.parallel_shutdown_timeout` if they legitimately need longer.")
@@ -84,9 +83,14 @@ module RSpec
           worker.called_exit = exit_status
           # Leaving anyway: it is not asked to stop.
           worker.quit_sent = true
-          return if @exit_status
+          if @exit_status
+            # A later `exit` in the same process decides its status.
+            @exit_status = exit_status if worker.equal?(@exit_worker)
+            return
+          end
 
           @exit_status = exit_status
+          @exit_worker = worker
           running = worker.current_example
           report "#{worker.description} is ending the run: #{worker.exit_cause}" \
                  "#{" in #{running.full_description} (#{running.location})" if running}. As in a serial run, no " \
@@ -100,6 +104,7 @@ module RSpec
         # examples:` and `.rspec_status` point at -- and what it had not
         # started of its unit goes to another worker.
         def lost(worker, what, consequence='')
+          spoil_exit
           because = "#{consequence}#{worker.exit_cause && ": #{worker.exit_cause}"}"
           if worker.loading
             worker.loading = false
@@ -178,6 +183,13 @@ module RSpec
           end
         end
 
+        # Once a worker's `exit` ended the run, its status stands only if every
+        # worker then leaves on its own: one lost, failing or forced to stop
+        # makes it end with the exit code the results call for.
+        def spoil_exit
+          @exit_spoiled = true if @exit_status
+        end
+
         def accepting_work?
           !@quitting && !@winding_down
         end
@@ -193,7 +205,6 @@ module RSpec
         # otherwise was aborted by its watchdog or killed.
         def left_by_exit(worker, status)
           unless status.nil? || (status.exited? && status.exitstatus == worker.called_exit)
-            @exit_spoiled = true
             ended = "#{status.signaled? ? 'was' : 'exited with'} #{WorkerHandle.describe_status(status)}"
             error("#{worker.description} ended the run because #{worker.exit_cause}, then #{ended}: if its " \
                   "watchdog aborted it, its `after(:suite)` hooks or " \

@@ -140,9 +140,9 @@ module RSpec
           true
         rescue SystemExit => e
           # Raised by an `after(:suite)` hook once it had left the loop, unless
-          # that was what made it leave.
-          unless @exit_announced
-            @exit_cause ||= exit_cause(e, 'an `after(:suite)` hook')
+          # it is what made it leave: its status is the process's, as serially.
+          unless e.status == @announced_status
+            @exit_cause = exit_cause(e, 'an `after(:suite)` hook')
             send_exiting(e)
           end
           raise
@@ -170,7 +170,7 @@ module RSpec
         # @private
         def send_exiting(exception)
           status = exception.status if exception.is_a?(SystemExit)
-          @exit_announced = true if status
+          @announced_status = status if status
           @results.send([:exiting, @exit_cause, status])
         rescue Errno::EPIPE, IOError
           nil # the coordinator is gone; the watchdog and its own watch still end this process

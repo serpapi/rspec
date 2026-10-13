@@ -278,6 +278,24 @@ module RSpec::Core::Parallel
         expect(leaving_frames).to eq([[:exiting, nil, nil], [:exiting, "an `after(:suite)` hook called `exit` or `abort` (status 5)", 5]])
       end
 
+      it "says so again when an after(:suite) hook calls exit with another status than the example did" do
+        RSpec.configuration.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+        exiting = RSpec.describe("Exits") { it("exits") { exit 4 } }
+        instance = Worker.new(2, [Unit.new(exiting)], jobs.first, results.last,
+                              :stderr => stderr, :exit => lambda { |_| }, :exit_now => lambda { |_| },
+                              :trap => lambda { |*| }, :watch_coordinator => false)
+        allow(instance).to receive(:arm_watchdog)
+        RSpec.configuration.after(:suite) { exit 5 }
+        jobs.last.send([:run, 0, exiting.id])
+
+        expect { instance.run }.to raise_error(SystemExit) { |error| expect(error.status).to eq(5) }
+
+        expect(leaving_frames).to eq([
+          [:exiting, "the code it ran called `exit` or `abort` (status 4)", 4],
+          [:exiting, "an `after(:suite)` hook called `exit` or `abort` (status 5)", 5]
+        ])
+      end
+
       it "names a signal or another exception that ends the process" do
         expect(worker.exit_cause(SignalException.new("TERM"), "the code it ran")).to eq("it received SIGTERM")
         expect(worker.exit_cause(NoMemoryError.new("too much"), "the code it ran")).to eq(

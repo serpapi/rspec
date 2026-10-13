@@ -532,6 +532,33 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       end
     end
 
+    it "ends with the status of an `after(:suite)` hook's later exit, as a serial run does" do
+      write_exiting_suite(4, "exit 5 if $exiting")
+
+      run_rspec "--order defined --parallel=2"
+
+      expect(last_cmd_exit_status).to eq(5)
+      expect(last_cmd_stdout).not_to include("An error occurred in a parallel worker")
+    end
+
+    it 'fails the run as usual when another worker then has to be stopped by force' do
+      write_file_formatted 'spec/exit_spec.rb', "
+        RSpec.configure { |c| c.parallel_shutdown_timeout = 0.5 }
+        RSpec.describe('Exits') { it('exits') { sleep 0.5; exit 0 } }
+        RSpec.describe('Stuck') { it('sleeps') { sleep 30 } }
+      "
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--order defined --parallel=2"
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 15
+      expect(last_cmd_exit_status).to eq(1)
+      expect(last_cmd_stdout).to include(
+        "is ending the run: the code it ran called `exit` or `abort` (status 0)",
+        "did not stop within 0.5 seconds of being asked to stop early (fail-fast or interrupt) while running this example"
+      )
+    end
+
     it 'is bounded when the worker then does not exit, failing the run' do
       # Leaves the worker's watchdog plenty of room to fire before the
       # coordinator steps in, even on a loaded machine.
