@@ -996,9 +996,11 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       previous = Kernel.srand(1234)
 
       run_rspec '--parallel=2 --no-parallel-preload'
+      # Drawn first: an `expect` may itself draw, by creating `RSpec.configuration` (rspec/rspec#305 does).
+      drawn = Kernel.rand(2**62)
 
       expect(last_cmd_stdout).to include("3 examples, 0 failures")
-      expect(Kernel.rand(2**62)).to eq(Random.new(1234).rand(2**62))
+      expect(drawn).to eq(Random.new(1234).rand(2**62))
     ensure
       Kernel.srand(previous)
     end
