@@ -308,14 +308,6 @@ FILTERING
     # rubocop:enable Metrics/CyclomaticComplexity
     # rubocop:enable Metrics/PerceivedComplexity
 
-    def add_tag_filter(options, filter_type, tag_name, value=true)
-      (options[filter_type] ||= {})[tag_name] = value
-    end
-
-    def set_fail_fast(options, value)
-      options[:fail_fast] = value
-    end
-
     def parallel_workers_from(argument)
       case argument
       when true then :auto
@@ -325,6 +317,14 @@ FILTERING
         abort "Expected a non-negative integer for `--parallel`, got: #{argument.inspect}\n\n" \
               "Please use --help for a listing of valid options"
       end
+    end
+
+    def add_tag_filter(options, filter_type, tag_name, value=true)
+      (options[filter_type] ||= {})[tag_name] = value
+    end
+
+    def set_fail_fast(options, value)
+      options[:fail_fast] = value
     end
 
     def configure_only_failures(options)

@@ -318,7 +318,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
     run_rspec "--order defined --fail-fast --parallel=2"
 
     expect(last_cmd_exit_status).to eq(1)
-    expect(last_cmd_stdout).to match(/^\d+ examples?, 1 failure$/)
+    # Later segments of the summary line (pending, errors, ...) are not this spec's business.
+    expect(last_cmd_stdout).to match(/^\d+ examples?, 1 failure(, .+)?$/)
     expect(last_cmd_stdout[/^(\d+) examples?/, 1].to_i).to be < 12
   end
 
