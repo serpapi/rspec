@@ -2000,7 +2000,10 @@ module RSpec
       end
 
       # @private
-      def with_suite_hooks
+      # `before_teardown` is called first once the suite is done (however it
+      # ends), before any `after(:suite)` hook: a parallel worker arms its
+      # exit watchdog there.
+      def with_suite_hooks(before_teardown=nil)
         return yield if dry_run?
 
         begin
@@ -2008,6 +2011,7 @@ module RSpec
           run_suite_hooks("a `before(:suite)` hook", @before_suite_hooks)
           yield
         ensure
+          before_teardown&.call
           RSpec.current_scope = :after_suite_hook
           run_suite_hooks("an `after(:suite)` hook", @after_suite_hooks)
           RSpec.current_scope = :suite

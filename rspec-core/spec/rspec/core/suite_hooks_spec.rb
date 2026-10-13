@@ -94,6 +94,23 @@ module RSpec::Core
       }.to raise_error("boom").and yield_control
     end
 
+    it 'calls a given callable before any `after(:suite)` hook, however the suite ends' do
+      order = []
+      RSpec.configuration.after(:suite) { order << :after_suite }
+      RSpec.configuration.before(:suite) do
+        RSpec.configuration.after(:suite) { order << :added_by_a_before_suite_hook }
+      end
+      exiting = lambda { order << [:before_teardown, $!.class] }
+
+      RSpec.configuration.with_suite_hooks(exiting) { order << :suite }
+      expect { RSpec.configuration.with_suite_hooks(exiting) { exit 2 } }.to raise_error(SystemExit)
+
+      expect(order).to eq([
+        :suite, [:before_teardown, NilClass], :added_by_a_before_suite_hook, :after_suite,
+        [:before_teardown, SystemExit], :added_by_a_before_suite_hook, :added_by_a_before_suite_hook, :after_suite
+      ])
+    end
+
     describe "the runner" do
       include_context "Runner support"
 

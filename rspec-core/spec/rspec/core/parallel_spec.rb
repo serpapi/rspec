@@ -133,7 +133,7 @@ module RSpec::Core
       it "skips groups without examples to run and keeps the given order without timing data" do
         all = groups(3)
         empty = RSpec.describe("empty")
-        expect(Parallel.units_for([all[1], empty, all[0], all[2]], config)).to eq([all[1], all[0], all[2]])
+        expect(Parallel.units_for([all[1], empty, all[0], all[2]], config).map(&:group)).to eq([all[1], all[0], all[2]])
       end
 
       context "with timings recorded in the example status persistence file", :isolated_directory do
@@ -152,7 +152,7 @@ module RSpec::Core
         end
 
         it "puts groups with no recorded timing first, then the others longest first" do
-          expect(Parallel.units_for(all, config)).to eq([all[2], all[1], all[3], all[0]])
+          expect(Parallel.units_for(all, config).map(&:group)).to eq([all[2], all[1], all[3], all[0]])
         end
 
         it "keeps the given order for groups with equal timings" do
@@ -165,12 +165,12 @@ module RSpec::Core
             |#{all[3].examples.first.id} | passed | 1 second  |
           STATUSES
 
-          expect(Parallel.units_for(all.reverse, config)).to eq(all.reverse)
+          expect(Parallel.units_for(all.reverse, config).map(&:group)).to eq(all.reverse)
         end
 
         it "ignores an unreadable status file" do
           allow(ExampleStatusPersister).to receive(:load_from).and_raise(Errno::EACCES)
-          expect(Parallel.units_for(all, config)).to eq(all)
+          expect(Parallel.units_for(all, config).map(&:group)).to eq(all)
         end
       end
     end

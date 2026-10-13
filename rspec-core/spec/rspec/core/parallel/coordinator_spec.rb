@@ -119,6 +119,7 @@ module RSpec::Core::Parallel
         when :garbage        then stall_after { results.io.write("garbage\n") }
         when :partial_frame  then stall_after { results.io.write("999\nabc") }
         when :closes_results then stall_after { results.close }
+        when :leaves_and_hangs then stall_after { leave_for_a_signal(jobs, results) }
         when :never_loads    then sleep
         when :dies_loading   then Thread.current.kill
         else
@@ -138,6 +139,13 @@ module RSpec::Core::Parallel
     def stall_after
       yield
       sleep
+    end
+
+    # Takes its first job, then says it is leaving its job loop because of a
+    # signal -- and never does.
+    def leave_for_a_signal(jobs, results)
+      jobs.receive
+      results.send([:exiting, "it received SIGHUP", nil])
     end
 
     # What a worker forked before loading reports once it has loaded the spec
@@ -161,7 +169,7 @@ module RSpec::Core::Parallel
       worker_config = RSpec::Core::Configuration.new
       worker_config.parallel_shutdown_timeout = 60
       Thread.current[:fake_worker_world] = RSpec::Core::World.new(worker_config)
-      Worker.new(number, @units, jobs, results,
+      Worker.new(number, units_of(@units), jobs, results,
                  :configuration => worker_config,
                  :world => Thread.current[:fake_worker_world],
                  :stderr => worker_stderr,
@@ -185,8 +193,12 @@ module RSpec::Core::Parallel
                                               :term_grace => 5, :kill_grace => 5, :watchdog_grace => 0.05 }.merge(options))
     end
 
-    def coordinator(units, worker_count=2, options={})
-      new_coordinator(units, worker_count, options).tap { |instance| instance.assign(units, units) }
+    def coordinator(groups, worker_count=2, options={})
+      new_coordinator(groups, worker_count, options).tap { |instance| instance.assign(groups, units_of(groups)) }
+    end
+
+    def units_of(groups)
+      groups.map { |group| Unit.new(group) }
     end
 
     # Started the way `--no-parallel-preload` starts it: the workers are forked
@@ -311,13 +323,34 @@ module RSpec::Core::Parallel
       end
     end
 
+    it "bounds the wait for a worker that left its job loop for a signal and does not exit, and runs its group elsewhere" do
+      config.parallel_shutdown_timeout = 0.05
+      worker_behaviours[1] = :leaves_and_hangs
+      groups = [passing_group("A"), passing_group("B")]
+
+      exit_code = coordinator(groups, 2, short_graces).run
+
+      expect(exit_code).to eq(config.failure_exit_code)
+      expect(process.signals.map(&:first)).to include("TERM")
+      expect(messages).to include(
+        "did not exit within 0.05 seconds of leaving its job loop (its `after(:suite)` hooks or `at_exit` handlers may " \
+        "be stuck; raise `config.parallel_shutdown_timeout` if they legitimately need longer) before it started A",
+        ": it received SIGHUP; 1 example of A",
+        "2 examples, 0 failures, 1 error occurred outside of examples"
+      )
+    end
+
     describe "a worker that exits while running a group" do
-      it "fails the example it was running with the reason and leaves the rest of the group unknown" do
+      it "fails the example it was running with the reason, never runs it again, and runs the rest of the group in another worker" do
         config.error_exit_code = 5
+        runs = Hash.new(0)
         crashing = RSpec.describe("Crashing") do
-          it("finishes") {}
-          it("dies") { Thread.current.kill }
-          it("never runs") {}
+          it("finishes") { runs[:finishes] += 1 }
+          it("dies") do
+            runs[:dies] += 1
+            Thread.current.kill
+          end
+          it("runs elsewhere") { runs[:elsewhere] += 1 }
         end
         groups = [crashing, passing_group("B")]
         config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
@@ -326,33 +359,36 @@ module RSpec::Core::Parallel
 
         expect(exit_code).to eq(config.failure_exit_code)
         dies = crashing.examples[1]
-        expect(crashing.examples.map { |e| e.execution_result.status }).to eq([:passed, :failed, nil])
+        expect(crashing.examples.map { |e| e.execution_result.status }).to eq([:passed, :failed, :passed])
+        expect(runs).to eq(:finishes => 1, :dies => 1, :elsewhere => 1)
         expect(dies.exception).to be_a(WorkerError)
         expect(dies.exception.message).to match(
-          /\AParallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running this example; the rest of Crashing \(.+\) did not run\.\z/
+          /\AParallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running this example; 1 example of Crashing \(.+\) that it had not started yet will run in another worker\.\z/
         )
         expect(dies.exception.backtrace).to eq([dies.location])
         expect(dies.execution_result.run_time).to be >= 0
-        expect(messages).to include("Crashing dies", "3 examples, 1 failure", "rspec #{dies.location_rerun_argument}")
+        expect(messages).to include("Crashing dies", "4 examples, 1 failure", "rspec #{dies.location_rerun_argument}")
       end
 
-      it "reports an error outside of examples when it was not running one" do
+      it "fails the unstarted examples of the group it was in when it was not running one, as a failing context hook does" do
         config.error_exit_code = 5
         crashing = RSpec.describe("Crashing") do
           before(:context) { Thread.current.kill }
-          it("never runs") {}
+          it("cannot run") {}
+          it("cannot run either") {}
         end
         groups = [crashing, passing_group("B")]
         config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
 
         exit_code = coordinator(groups).run
 
-        expect(exit_code).to eq(5)
-        expect(crashing.examples.first.execution_result.status).to be_nil
-        expect(messages).to match(
-          /An error occurred in a parallel worker\.\nParallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running Crashing \(.+\), outside of any example\./
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(crashing.examples.map { |e| e.execution_result.status }).to eq([:failed, :failed])
+        expect(crashing.examples.first.exception.message).to match(
+          /\AParallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 1\) while running Crashing \(.+\), outside of any example, so this example could not run\.\z/
         )
-        expect(messages).to include("1 example, 0 failures, 1 error occurred outside of examples")
+        expect(messages).to include("3 examples, 2 failures", "rspec #{crashing.examples.first.location_rerun_argument}")
+        expect(messages).not_to include("outside of examples")
       end
     end
 
@@ -447,7 +483,7 @@ module RSpec::Core::Parallel
         expect(exit_code).to eq(config.failure_exit_code)
         expect(process.signals.map(&:first)).to eq(["TERM"])
         expect(stuck.examples.first.exception.message).to match(
-          /\AParallel worker 2 \(pid \d+\) did not stop within 0\.5 seconds of being asked to stop early \(fail-fast or interrupt\) while running this example, so it was sent SIGTERM; the rest of Stuck \(.+\) did not run\.\z/
+          /\AParallel worker 2 \(pid \d+\) did not stop within 0\.5 seconds of being asked to stop early \(fail-fast or interrupt\) while running this example, so it was sent SIGTERM\.\z/
         )
         expect(messages).to include("2 examples, 2 failures")
       end
@@ -467,7 +503,7 @@ module RSpec::Core::Parallel
 
     describe "with workers forked before the spec files are loaded" do
       def run_started(units, worker_count=2, options={})
-        started_coordinator(units, worker_count, options).tap { |instance| instance.assign(units, units) }.run
+        started_coordinator(units, worker_count, options).tap { |instance| instance.assign(units, units_of(units)) }.run
       end
 
       it "gives work to the workers that report having loaded the examples this process has" do

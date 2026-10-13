@@ -311,13 +311,14 @@ Rails application that means `rails_helper` has already evaluated
 before any worker exists: setting `TEST_ENV_NUMBER` afterwards does **not**
 give workers separate databases, so such Rails suites run under `--parallel`
 share one test database until rspec-rails adds per-worker database support.
-Open connections, servers and similar resources acquired at load time are
-shared the same way; acquire them in `before(:suite)` to get one per worker.
-In particular, a database client that connected while the spec files loaded (a
-query at load time is enough) hands the same connection to every worker unless
-it reconnects after `fork` by itself -- as with app servers that preload, make
-each worker reconnect in a `before(:suite)` hook, e.g.
-`Mongoid.disconnect_clients`. On macOS, the system networking libraries do not
+Anything the spec files open while they load -- connections, servers,
+threads -- is inherited by every worker; acquire such resources in
+`before(:suite)` to get one per worker. A database client that connected while
+the spec files loaded (a query at load time is enough) hands the same
+connection to every worker unless it reconnects after `fork` by itself: as with
+app servers that preload, make each worker reconnect in a `before(:suite)`
+hook (with Mongoid, `Mongoid.disconnect_clients`), or have the workers load the
+spec files themselves (below). On macOS, the system networking libraries do not
 survive `fork` well either: when loading the spec files does a lot of work
 (resolving host names, say), workers can crash in `getaddrinfo` or hang.
 
@@ -368,11 +369,31 @@ non-daemon thread, a browser that will not quit, ...) is given
 `after(:suite)` hooks and `at_exit` handlers; after that it dumps the
 backtraces of all its threads to stderr and is aborted, and the run exits
 with `config.error_exit_code`. The coordinator never waits unboundedly for a
-finished worker. A worker that crashes or is killed (`exit!`, a segfault, the
-OOM killer, ...) fails the example it was running with the reason, so the
-example is listed under "Failed examples" and picked up by `--only-failures`;
-the rest of its example group does not run, and problems outside of examples
-count as errors outside of examples. Workers also exit on their own if the
+finished worker -- not even one whose watchdog cannot run and that ignores
+SIGTERM: the run waits for it about the shutdown timeout plus 11 seconds at
+most (a second of grace, then 5 seconds after SIGTERM and 5 after SIGKILL).
+
+A worker that crashes or is killed (`exit!`, a segfault, the OOM killer, ...)
+fails the example it was running with the reason, so the example is listed
+under "Failed examples" and picked up by `--only-failures`, and is not run
+again -- whatever it did may be why the worker died; the examples of its group
+it had not started yet run in another worker. One lost in a `before(:context)`
+or `after(:context)` hook fails the examples of that group it had not started,
+as such a hook raising an error would, and the rest of its group runs
+elsewhere. Workers that run out of work wait for the busy ones, so that there
+is a worker to run what a lost one leaves; if none remains, the run says which
+examples did not run and how to run them. Problems between example groups count
+as errors outside of examples.
+
+RSpec does not rescue `SystemExit`, so in a serial run code that calls `exit`
+(or `abort`) ends the run with that status. Under `--parallel` it ends the run
+the same way: no further examples start, busy workers stop after the example
+they are running, the summary covers what ran and the run exits with the status
+passed to `exit` -- unless a worker then had to be aborted or killed for not
+exiting in time. Which examples ran before that depends on timing. To make such
+an `exit` fail the example instead, rescue `SystemExit` in an `around` hook.
+
+Workers also exit on their own if the
 coordinating process disappears. SIGTERM or SIGHUP to the coordinating
 process, as `timeout` or a cancelled CI job sends, stops every worker -- even
 one that cannot tear down -- before the process ends the way a serial run

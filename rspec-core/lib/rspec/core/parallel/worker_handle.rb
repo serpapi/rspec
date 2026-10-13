@@ -5,7 +5,10 @@ module RSpec
       # @private
       class WorkerHandle
         attr_reader :number, :jobs, :results, :child_jobs, :child_results, :current_example, :current_example_started_at
-        attr_accessor :pid, :current_unit, :state, :escalation, :exit_status, :quit_sent, :exiting
+        attr_accessor :pid, :current_unit, :state, :escalation, :exit_status, :quit_sent, :exiting, :exit_cause
+        # The status it was asked to `exit` with; the examples and the last
+        # group it started of its current unit.
+        attr_accessor :called_exit, :started_example_ids, :last_started_group
         # When the deadline was set: only a pause after that postpones it.
         attr_reader :deadline, :deadline_set_at
         # Forked before the spec files were loaded and has not yet reported
@@ -25,7 +28,9 @@ module RSpec
           @quit_sent = false
           @exiting = false
           @loading = false
-          @pid = @current_unit = @deadline = @deadline_set_at = @escalation = @exit_status = nil
+          @pid = @current_unit = @deadline = @deadline_set_at = @escalation = @exit_status = @exit_cause = @called_exit = nil
+          @started_example_ids = {}
+          @last_started_group = nil
           @current_example = @current_example_started_at = nil
         end
 
@@ -58,14 +63,18 @@ module RSpec
         #   when it was lost, and a result failing it with `text`
         def lost_example_result(text)
           example = @current_example
+          result = self.class.failed_result(example, text, @current_example_started_at)
+          self.current_example = nil
+          [example, result]
+        end
+
+        # @return [Hash] a result failing `example` with a {WorkerError}
+        def self.failed_result(example, text, started_at=RSpec::Core::Time.now)
           exception = WorkerError.new(text)
           exception.set_backtrace([example.location])
           finished_at = RSpec::Core::Time.now
-          result = { :status => :failed, :started_at => @current_example_started_at, :finished_at => finished_at,
-                     :run_time => finished_at - @current_example_started_at,
-                     :exception => RemoteException.payload_for(exception) }
-          self.current_example = nil
-          [example, result]
+          { :status => :failed, :started_at => started_at, :finished_at => finished_at,
+            :run_time => finished_at - started_at, :exception => RemoteException.payload_for(exception) }
         end
 
         # @return [Integer] the pid of the worker process forked to run `units`,

@@ -17,8 +17,11 @@ Enhancements:
   `RSpec::Core::Configuration#parallel_worker_number` and set `TEST_ENV_NUMBER` the way
   parallel_tests does. A worker that finishes but does not exit is aborted after
   `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its
-  threads, so a stuck `at_exit` handler can no longer hang a run, and a worker that
-  crashes fails the example it was running instead of taking the run down. A run stopped
+  threads, so a stuck `at_exit` handler can no longer hang a run (nor can one that runs
+  after code under test called `exit`), and a worker that crashes fails the example it was
+  running instead of taking the run down, while the examples of its group it had not
+  started run in another worker. Code that calls `exit` ends the run with that status, as
+  it does serially. A run stopped
   with SIGTERM or SIGHUP says which example each worker was running and for how long. With
   `--no-parallel-preload` (`RSpec::Core::Configuration#parallel_preload`) the workers are
   forked before the spec files are loaded and each loads them itself, so nothing the spec

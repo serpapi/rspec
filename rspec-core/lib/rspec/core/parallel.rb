@@ -18,6 +18,22 @@ module RSpec
       # stop or exit in time.
       class WorkerError < StandardError; end
 
+      # What a worker is given to run: a top-level example group, or only the
+      # examples of it with these ids -- the ones a lost worker had not
+      # started -- which it runs as `rspec path[ids]` would: those examples,
+      # and the context hooks of the groups that contain them.
+      # @private
+      Unit = Struct.new(:group, :example_ids, :retried) do
+        # @return [Array<String>] the ids of the examples to run
+        def ids
+          example_ids || group.descendant_filtered_examples.map(&:id)
+        end
+
+        def description
+          "#{group.description} (#{group.location})"
+        end
+      end
+
       # @return [Coordinator, nil] a coordinator for the loaded groups, its
       #   workers to be forked once it runs, or `nil` when the run should
       #   proceed serially (not requested, not possible or not worth it).
@@ -79,25 +95,28 @@ module RSpec
         Etc.nprocessors
       end
 
-      # The groups to dispatch: top-level groups with at least one example to
+      # The units to dispatch: top-level groups with at least one example to
       # run, longest first when a previous run recorded their timings in the
-      # example status persistence file, so that the slowest group is never
-      # the one that starts last. Groups without timings go first because
+      # example status persistence file, so that the slowest unit is never
+      # the one that starts last. Units without timings go first because
       # nothing is known about them.
+      # @return [Array<Unit>]
       # @private
       def self.units_for(example_groups, configuration)
-        units = example_groups.select { |group| group.descendant_filtered_examples.any? }
         run_times = recorded_run_times(configuration)
+        units = example_groups.flat_map do |group|
+          group.descendant_filtered_examples.empty? ? [] : [Unit.new(group)]
+        end
         return units if run_times.empty?
 
         timed = {}
-        units.each do |group|
-          ids = group.descendant_filtered_examples.map(&:id)
-          timed[group] = ids.sum { |id| run_times.fetch(id, 0.0) } if ids.any? { |id| run_times.key?(id) }
+        units.each do |unit|
+          ids = unit.ids
+          timed[unit] = ids.sum { |id| run_times.fetch(id, 0.0) } if ids.any? { |id| run_times.key?(id) }
         end
 
-        unknown, known = units.partition { |group| !timed.key?(group) }
-        unknown + known.each_with_index.sort_by { |group, index| [-timed[group], index] }.map(&:first)
+        unknown, known = units.partition { |unit| !timed.key?(unit) }
+        unknown + known.each_with_index.sort_by { |unit, index| [-timed[unit], index] }.map(&:first)
       end
 
       # @private

@@ -25,6 +25,10 @@ Feature: `--parallel` option
   is given work only once it has loaded the same examples as the coordinating
   process.
 
+  A worker that crashes fails the example it was running, and the examples of
+  its group it had not started run in another worker. Code that calls `exit`
+  ends the run with that status, as it does in a serial run.
+
   `--parallel` needs `fork`. Where it is not available (Windows, JRuby), or
   when `TEST_ENV_NUMBER` is already set because another tool is running RSpec
   in parallel, RSpec prints a warning and runs serially.
@@ -122,6 +126,38 @@ Feature: `--parallel` option
     And the stderr should contain "did not exit within 1 second of finishing its last example group"
     And the stderr should contain "Threads at this point:"
     And the stderr should contain "join"
+
+  Scenario: A worker that crashes leaves the rest of its group to another worker
+    Given a file named "spec/crash_spec.rb" with:
+      """ruby
+      RSpec.describe "Crashing" do
+        it "dies" do
+          exit!(7)
+        end
+
+        it "runs in another worker" do
+          expect(5).to eq(5)
+        end
+      end
+      """
+    When I run `rspec --parallel=2 --order defined`
+    Then the exit status should be 1
+    And the output should contain "6 examples, 2 failures"
+    And the output should contain "exited unexpectedly (exit status 7) while running this example; 1 example of Crashing"
+    And the output should contain "rspec ./spec/crash_spec.rb:2 # Crashing dies"
+
+  Scenario: Code that calls `exit` ends the run with that status, as in a serial run
+    Given a file named "spec/exit_spec.rb" with:
+      """ruby
+      RSpec.describe "Exiting" do
+        it "exits" do
+          exit 3
+        end
+      end
+      """
+    When I run `rspec --parallel=2 --order defined`
+    Then the exit status should be 3
+    And the output should contain "is ending the run: the code it ran called `exit` or `abort` (status 3)"
 
   Scenario: With `--no-parallel-preload` workers run the groups they loaded themselves
     Given a file named "spec/gamma_spec.rb" with:

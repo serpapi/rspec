@@ -41,7 +41,7 @@ module RSpec::Core
 
         all = groups(1).tap { |list| list.first.describe("nested") { it("e") {} } } + groups(2)
         expect(plan.coordinator_for(all)).to be(started)
-        expect(started).to have_received(:assign).with(all, all)
+        expect(started).to have_received(:assign).with(all, all.map { |group| Parallel::Unit.new(group) })
       end
 
       it "forks no more workers than there are spec files to load" do

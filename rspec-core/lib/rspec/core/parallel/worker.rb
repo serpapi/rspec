@@ -130,27 +130,99 @@ module RSpec
           message = @jobs.receive
           return false unless message && message.first == :run
 
-          @configuration.with_suite_hooks do
+          @configuration.with_suite_hooks(method(:leaving)) do
             while message && message.first == :run
-              run_unit(message[1], message[2])
+              run_unit(*message.drop(1))
               message = @jobs.receive
             end
-
-            # Armed before `after(:suite)` hooks so that a hook that never
-            # returns is bounded too.
-            arm_watchdog
           end
 
-          @results.send([:exiting])
           true
+        rescue SystemExit => e
+          # Raised by an `after(:suite)` hook once it had left the loop, unless
+          # that was what made it leave.
+          unless @exit_announced
+            @exit_cause ||= exit_cause(e, 'an `after(:suite)` hook')
+            send_exiting(e)
+          end
+          raise
+        end
+
+        # Arms the watchdog and tells the coordinator -- which then bounds the
+        # wait from its side too -- before any `after(:suite)` hook runs,
+        # however the worker leaves its job loop: done, told to stop, or
+        # because the code it ran called `exit` (not rescued, as in a serial
+        # run) or the process got a signal. `$!` is the exception ending the
+        # process, if any.
+        # @private
+        def leaving
+          return if @leaving
+
+          @leaving = true
+          exception = $!
+          @exit_cause = exit_cause(exception, 'the code it ran')
+          arm_watchdog
+          send_exiting(exception)
+        end
+
+        # `[:exiting, cause, exit_status]`: sent on leaving the job loop, and
+        # again for an `exit` that comes later.
+        # @private
+        def send_exiting(exception)
+          status = exception.status if exception.is_a?(SystemExit)
+          @exit_announced = true if status
+          @results.send([:exiting, @exit_cause, status])
+        rescue Errno::EPIPE, IOError
+          nil # the coordinator is gone; the watchdog and its own watch still end this process
+        end
+
+        # @return [String, nil] why the process is ending early, as the end of
+        #   a sentence: "the code it ran called `exit` or `abort` (status 0)"
+        # @private
+        def exit_cause(exception, source)
+          case exception
+          when nil then nil
+          when SystemExit then "#{source} called `exit` or `abort` (status #{exception.status})"
+          when SignalException then "it received #{exception.signm}"
+          else "#{source} raised #{exception.class} (#{exception.message.to_s[0, 200]})"
+          end
         end
 
         # @private
-        def run_unit(index, id)
-          group = @groups_by_id ? @groups_by_id.fetch(id) : @example_groups.fetch(index)
-          passed = group.run(@reporter)
+        def run_unit(index, id, example_ids=nil)
+          group = groups_by_id.fetch(id)
+          passed = example_ids ? run_only(group, example_ids) : group.run(@reporter)
           @results.send([:unit_finished, index, passed ? true : false,
                          !!@world.wants_to_quit, !!@world.non_example_failure])
+        end
+
+        # Runs the group the way a run filtered to these examples would
+        # (`rspec path[ids]`): only they run, and only the context hooks of
+        # the groups that contain them. Groups filter their examples through
+        # `RSpec.world`, and every group of the tree caches which of its and
+        # its descendants' examples run, so each one is reset, before and
+        # after.
+        # @private
+        def run_only(group, example_ids)
+          wanted = example_ids.to_h { |id| [id, true] }
+          filtered = RSpec.world.filtered_examples
+          groups = group.descendants
+          kept = groups.map { |each| filtered[each] }
+          groups.each { |each| filtered[each] = filtered[each].select { |example| wanted.key?(example.id) } }
+          groups.each(&:reset_memoized)
+          group.run(@reporter)
+        ensure
+          if kept
+            groups.each_with_index { |each, index| filtered[each] = kept[index] }
+            groups.each(&:reset_memoized)
+          end
+        end
+
+        # Those of the units it was forked with, unless it loaded the spec
+        # files itself: what it is given later is part of one of them.
+        # @private
+        def groups_by_id
+          @groups_by_id ||= @example_groups.to_h { |unit| [unit.group.id, unit.group] }
         end
 
         # @private
@@ -167,13 +239,18 @@ module RSpec
           end
           thread.report_on_exception = false
           thread
+        rescue ThreadError
+          nil # no thread for it; the coordinator's deadline still ends this process
         end
 
         # @private
         def dump_threads(timeout)
           stderr = @stderr || $stderr
+          stopping = @exit_cause ? "stopping because #{@exit_cause}" : 'finishing its last example group'
           stderr.puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) did not exit within " \
-                      "#{Parallel.seconds(timeout)} of finishing its last example group; aborting it. Threads at this point:"
+                      "#{Parallel.seconds(timeout)} of #{stopping}; aborting it. Its `after(:suite)` hooks or " \
+                      "`at_exit` handlers may be stuck, or need a longer `config.parallel_shutdown_timeout`. " \
+                      "Threads at this point:"
           Thread.list.each do |thread|
             stderr.puts "  #{thread.inspect}#{' (this watchdog)' if thread.equal?(Thread.current)}"
             Array(thread.backtrace).each { |line| stderr.puts "    #{line}" }

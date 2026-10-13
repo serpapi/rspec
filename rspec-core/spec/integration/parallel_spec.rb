@@ -421,17 +421,19 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
       expect(last_cmd_exit_status).to eq(1)
       expect(last_cmd_stdout).to include("2 examples, 0 failures")
-      expect(last_cmd_stdout).to include("2 example groups did not run because no worker remained to run them")
+      expect(last_cmd_stdout).to match(
+        /^2 examples of 2 example groups did not run because no worker remained to run them\. To run them: rspec '?\.\/spec\/\w+_spec\.rb\[1\]'? '?\.\/spec\/\w+_spec\.rb\[1\]'?$/
+      )
     end
   end
 
-  it 'fails the example a worker dies in, with the reason, so it can be rerun' do
+  it 'fails the example a worker dies in, with the reason, so it can be rerun, and runs the rest of its group in another worker' do
     write_file_formatted 'spec/crash_spec.rb', "
       RSpec.configure { |c| c.example_status_persistence_file_path = 'status.txt' }
       RSpec.describe 'Crashing' do
         it('finishes') { }
-        it('dies') { exit!(7) }
-        it('never runs') { }
+        it('dies') { File.write(\"dies_\#{Process.pid}\", ''); exit!(7) }
+        it('runs in another worker') { File.write(\"rest_\#{Process.pid}\", '') }
       end
       RSpec.describe('Fine') { it('passes') { } }
     "
@@ -440,28 +442,163 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :skip => !RSpec::Suppor
 
     expect(last_cmd_exit_status).to eq(1)
     expect(last_cmd_stdout).to match(
-      /Failure\/Error: it\('dies'\) \{ exit!\(7\) \}\n\s+Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running this example; the rest of Crashing \(\.\/spec\/crash_spec\.rb:2\) did not run\./
+      /Failure\/Error: it\('dies'\) \{ File\.write.*exit!\(7\) \}\n\s+Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running this example; 1 example of Crashing \(\.\/spec\/crash_spec\.rb:2\) that it had not started yet will run in another worker\./
     )
-    expect(last_cmd_stdout).to include("3 examples, 1 failure", "rspec ./spec/crash_spec.rb:4 # Crashing dies")
-    cd('.') { expect(File.read('status.txt')).to match(%r{^\./spec/crash_spec\.rb\[1:2\] \| failed }) }
+    expect(last_cmd_stdout).to include("4 examples, 1 failure", "rspec ./spec/crash_spec.rb:4 # Crashing dies")
+    cd('.') do
+      expect(File.read('status.txt')).to match(%r{^\./spec/crash_spec\.rb\[1:2\] \| failed })
+      expect(File.read('status.txt')).to match(%r{^\./spec/crash_spec\.rb\[1:3\] \| passed })
+      expect(Dir['dies_*'].size).to eq(1)
+      expect(Dir['rest_*'].map { |file| file[/\d+/] }).not_to include(Dir['dies_*'].first[/\d+/])
+    end
   end
 
-  it 'counts a worker that dies outside of any example as an error and fails the run with the error exit code' do
+  it 'fails the examples of a group whose context hook a worker dies in, as a raising hook would, and runs the rest elsewhere' do
     write_file_formatted 'spec/crash_spec.rb', "
+      RSpec.configure { |c| c.example_status_persistence_file_path = 'status.txt' }
       RSpec.describe 'Crashing' do
-        before(:context) { exit!(7) }
-        it('never runs') { }
+        context 'broken' do
+          before(:context) { exit!(7) }
+          it('cannot run') { }
+        end
+        context 'fine' do
+          it('runs in another worker') { }
+        end
       end
-      RSpec.describe('Fine') { it('passes') { } }
+      RSpec.describe('Fine') { it('passes') { sleep 0.5 } }
     "
 
     run_rspec "--order defined --parallel=2 --error-exit-code 3 spec/crash_spec.rb"
 
-    expect(last_cmd_exit_status).to eq(3)
+    expect(last_cmd_exit_status).to eq(1)
     expect(last_cmd_stdout).to match(
-      /Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running Crashing \(\.\/spec\/crash_spec\.rb:1\), outside of any example\./
+      /Parallel worker 1 \(pid \d+\) exited unexpectedly \(exit status 7\) while running Crashing broken \(\.\/spec\/crash_spec\.rb:3\), outside of any example, so this example could not run; 1 example of Crashing \(\.\/spec\/crash_spec\.rb:2\) that it had not started yet will run in another worker\./
     )
-    expect(last_cmd_stdout).to include("1 example, 0 failures, 1 error occurred outside of examples")
+    expect(last_cmd_stdout).to include("3 examples, 1 failure", "rspec ./spec/crash_spec.rb:5 # Crashing broken cannot run")
+    expect(last_cmd_stdout).not_to include("outside of examples")
+    cd('.') do
+      expect(File.read('status.txt')).to match(%r{^\./spec/crash_spec\.rb\[1:1:1\] \| failed })
+      expect(File.read('status.txt')).to match(%r{^\./spec/crash_spec\.rb\[1:2:1\] \| passed })
+    end
+  end
+
+  describe 'when the code an example runs calls `exit`' do
+    # A run that a worker's `exit` ends raises `SystemExit` out of
+    # `Runner.run`, as a serial run does -- which would end this very run.
+    def run_rspec(cmd)
+      super
+    rescue SystemExit => e
+      @last_cmd_exit_status = e.status
+    end
+
+    def write_exiting_suite(status, after_suite="")
+      write_file_formatted 'spec/exit_spec.rb', "
+        RSpec.configure do |c|
+          c.parallel_shutdown_timeout = 0.5
+          c.after(:suite) { #{after_suite} }
+        end
+        RSpec.describe 'Exits' do
+          it('exits') do
+            sleep 0.2
+            $exiting = true
+            exit #{status}
+          end
+          it('never runs') { File.write('ran_after_exit', '') }
+        end
+        RSpec.describe 'Keeps going' do
+          20.times { |i| it(\"waits \#{i}\") { sleep 0.05 } }
+        end
+      "
+    end
+
+    [0, 3].each do |status|
+      it "ends the run as a serial run does, with status #{status}: no further examples start" do
+        write_exiting_suite(status)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        run_rspec "--order defined --parallel=2"
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
+        expect(last_cmd_exit_status).to eq(status)
+        expect(last_cmd_stdout).to match(
+          /Parallel worker \d \(pid \d+\) is ending the run: the code it ran called `exit` or `abort` \(status #{status}\) in Exits exits \(\.\/spec\/exit_spec\.rb:6\)\. As in a serial run, no further examples start and the run exits with status #{status}\.$/
+        )
+        expect(last_cmd_stdout[/^(\d+) examples?/, 1].to_i).to be < 22
+        expect(last_cmd_stdout).to match(/^\d+ examples?, 0 failures$/)
+        cd('.') { expect(File).not_to exist('ran_after_exit') }
+      end
+    end
+
+    it 'is bounded when the worker then does not exit, failing the run' do
+      # Leaves the worker's watchdog plenty of room to fire before the
+      # coordinator steps in, even on a loaded machine.
+      stub_const("RSpec::Core::Parallel::Coordinator::WATCHDOG_GRACE", 5.0)
+      write_exiting_suite(0, "if $exiting; $stderr = File.open('worker_stderr.txt', 'w'); sleep 30; end")
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--order defined --parallel=2 --error-exit-code 3"
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
+      expect(last_cmd_exit_status).to eq(3)
+      expect(last_cmd_stdout).to match(
+        /Parallel worker \d \(pid \d+\) ended the run because the code it ran called `exit` or `abort` \(status 0\), then exited with exit status 1: if its watchdog aborted it, its `after\(:suite\)` hooks or `at_exit` handlers did not finish within 0\.5 seconds/
+      )
+      expect(cd('.') { File.read('worker_stderr.txt') }).to include(
+        "did not exit within 0.5 seconds of stopping because the code it ran called `exit` or `abort` (status 0); aborting it."
+      )
+    end
+
+    it 'is bounded by the coordinator when the worker cannot abort itself and ignores SIGTERM' do
+      stub_const("RSpec::Core::Parallel::Coordinator::TERM_GRACE", 0.3)
+      stub_const("RSpec::Core::Parallel::Coordinator::KILL_GRACE", 0.3)
+      stub_const("RSpec::Core::Parallel::Coordinator::WATCHDOG_GRACE", 0.1)
+      # Inherited by the forked workers: a watchdog that never gets to run.
+      allow_any_instance_of(RSpec::Core::Parallel::Worker).to receive(:arm_watchdog)
+      write_exiting_suite(0, "if $exiting; trap('TERM') { }; File.write('stuck.pid', Process.pid.to_s); sleep 30; end")
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--order defined --parallel=2 --error-exit-code 3"
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      # The shutdown timeout, the watchdog grace and both signal graces, with room for a loaded machine.
+      expect(elapsed).to be < 0.5 + 0.1 + 0.3 + 0.3 + 5
+      expect(last_cmd_exit_status).to eq(3)
+      expect(last_cmd_stdout).to include(
+        "did not exit within 0.5 seconds of ending the run because the code it ran called `exit` or `abort` (status 0)",
+        "still alive 0.3 seconds after SIGTERM; sending SIGKILL"
+      )
+      stuck = cd('.') { Integer(File.read('stuck.pid')) }
+      expect { Process.kill(0, stuck) }.to raise_error(Errno::ESRCH)
+    end
+
+    it 'ends the run with that status from a before(:suite) hook too, bounded when the worker then hangs' do
+      stub_const("RSpec::Core::Parallel::Coordinator::WATCHDOG_GRACE", 5.0)
+      write_file_formatted 'spec/exit_spec.rb', "
+        RSpec.configure do |c|
+          c.parallel_shutdown_timeout = 0.5
+          c.before(:suite) do
+            c.after(:suite) do
+              $stderr = File.open(\"worker_stderr_\#{Process.pid}.txt\", 'w')
+              sleep 30
+            end
+            exit 4
+          end
+        end
+        RSpec.describe('One') { it('never runs') { File.write('ran', '') } }
+        RSpec.describe('Two') { it('never runs') { File.write('ran', '') } }
+      "
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--parallel=2 --error-exit-code 3"
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
+      expect(last_cmd_exit_status).to eq(3)
+      expect(last_cmd_stdout).to include("is ending the run: the code it ran called `exit` or `abort` (status 4)")
+      dumps = cd('.') { Dir['worker_stderr_*.txt'].map { |file| File.read(file) } }
+      expect(dumps).not_to be_empty
+      expect(dumps).to all(include("of stopping because the code it ran called `exit` or `abort` (status 4); aborting it."))
+      cd('.') { expect(File).not_to exist('ran') }
+    end
   end
 
   it 'stops its workers, even ones that cannot tear down, when it and its process group get SIGTERM, saying what they ran' do

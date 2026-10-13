@@ -18,7 +18,7 @@ module RSpec::Core::Parallel
     let(:traps) { {} }
 
     def worker(number=2, options={})
-      Worker.new(number, groups, jobs.first, results.last,
+      Worker.new(number, groups.map { |group| Unit.new(group) }, jobs.first, results.last,
                  { :stderr => stderr,
                    :exit => lambda { |status| exits << [:exit, status] },
                    :exit_now => lambda { |status| exits << [:exit_now, status] },
@@ -147,8 +147,8 @@ module RSpec::Core::Parallel
         RSpec.configuration.after(:suite) { order << :after_suite }
         groups.first.before(:context) { order << :group }
 
-        jobs.last.send([:run, 0])
-        jobs.last.send([:run, 1])
+        jobs.last.send([:run, 0, groups[0].id])
+        jobs.last.send([:run, 1, groups[1].id])
         jobs.last.send([:stop])
 
         worker.run
@@ -161,7 +161,7 @@ module RSpec::Core::Parallel
           [:unit_finished, 0, true, false, false],
           [:unit_finished, 1, false, false, false]
         ])
-        expect(all.last).to eq([:exiting])
+        expect(all.last).to eq([:exiting, nil, nil])
         expect(all.map(&:first)).to include(:group_started, :example_started, :example_finished, :group_finished)
       end
 
@@ -191,7 +191,7 @@ module RSpec::Core::Parallel
 
       it "reports a quitting world and non-example failures with the unit" do
         RSpec.configuration.before(:suite) { raise "suite setup failed" }
-        jobs.last.send([:run, 0])
+        jobs.last.send([:run, 0, groups[0].id])
         jobs.last.send([:stop])
 
         worker.run
@@ -202,7 +202,7 @@ module RSpec::Core::Parallel
 
       it "exits immediately without reporting when the results pipe is gone" do
         results.first.close
-        jobs.last.send([:run, 0])
+        jobs.last.send([:run, 0, groups[0].id])
         jobs.last.send([:stop])
 
         worker.run
@@ -215,12 +215,158 @@ module RSpec::Core::Parallel
         instance = worker
         RSpec.configuration.after(:suite) { armed_during_after_suite = instance.instance_variable_get(:@watchdog_armed) }
         allow(instance).to receive(:arm_watchdog) { instance.instance_variable_set(:@watchdog_armed, true) }
-        jobs.last.send([:run, 0])
+        jobs.last.send([:run, 0, groups[0].id])
         jobs.last.send([:stop])
 
         instance.run
 
         expect(armed_during_after_suite).to be true
+      end
+    end
+
+    describe "leaving its job loop" do
+      def leaving_frames
+        frames.select { |frame| frame.first == :exiting }
+      end
+
+      it "arms the watchdog and says so before any after(:suite) hook, even one a before(:suite) hook added before calling exit" do
+        instance = worker
+        armed = []
+        allow(instance).to receive(:arm_watchdog) { armed << :watchdog }
+        config = RSpec.configuration
+        config.before(:suite) do
+          config.after(:suite) { armed << :late_after_suite }
+          exit 4
+        end
+        jobs.last.send([:run, 0, groups[0].id])
+
+        expect { instance.run }.to raise_error(SystemExit) { |error| expect(error.status).to eq(4) }
+
+        expect(armed).to eq([:watchdog, :late_after_suite])
+        expect(leaving_frames).to eq([[:exiting, "the code it ran called `exit` or `abort` (status 4)", 4]])
+      end
+
+      it "says which status the code it ran called `exit` with in an example, and runs nothing after it" do
+        RSpec.configuration.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+        ran = []
+        exiting = RSpec.describe("Exits") do
+          it("exits") { exit 3 }
+          it("never runs") { ran << :after }
+        end
+        instance = Worker.new(2, [Unit.new(exiting)], jobs.first, results.last,
+                              :stderr => stderr, :exit => lambda { |_| }, :exit_now => lambda { |_| },
+                              :trap => lambda { |*| }, :watch_coordinator => false)
+        allow(instance).to receive(:arm_watchdog)
+        jobs.last.send([:run, 0, exiting.id])
+
+        expect { instance.run }.to raise_error(SystemExit) { |error| expect(error.status).to eq(3) }
+
+        expect(ran).to eq([])
+        expect(leaving_frames).to eq([[:exiting, "the code it ran called `exit` or `abort` (status 3)", 3]])
+        expect(instance).to have_received(:arm_watchdog).once
+      end
+
+      it "says so again, with the status, when an after(:suite) hook calls exit" do
+        instance = worker
+        allow(instance).to receive(:arm_watchdog)
+        RSpec.configuration.after(:suite) { exit 5 }
+        jobs.last.send([:run, 0, groups[0].id])
+        jobs.last.send([:stop])
+
+        expect { instance.run }.to raise_error(SystemExit) { |error| expect(error.status).to eq(5) }
+
+        expect(leaving_frames).to eq([[:exiting, nil, nil], [:exiting, "an `after(:suite)` hook called `exit` or `abort` (status 5)", 5]])
+      end
+
+      it "names a signal or another exception that ends the process" do
+        expect(worker.exit_cause(SignalException.new("TERM"), "the code it ran")).to eq("it received SIGTERM")
+        expect(worker.exit_cause(NoMemoryError.new("too much"), "the code it ran")).to eq(
+          "the code it ran raised NoMemoryError (too much)"
+        )
+      end
+
+      it "goes on without a watchdog when no thread can be started for it" do
+        instance = worker
+        allow(Thread).to receive(:new).and_raise(ThreadError, "can't create Thread: Resource temporarily unavailable")
+
+        expect(instance.arm_watchdog).to be_nil
+      end
+
+      it "names why it is stopping in its thread dump" do
+        RSpec.configuration.parallel_shutdown_timeout = 0.05
+        instance = worker
+        instance.instance_variable_set(:@exit_cause, "the code it ran called `exit` or `abort` (status 0)")
+
+        instance.dump_threads(0.05)
+
+        expect(stderr.string).to include(
+          "did not exit within 0.05 seconds of stopping because the code it ran called `exit` or `abort` (status 0); aborting it."
+        )
+      end
+    end
+
+    describe "given a unit of some examples of a group" do
+      let(:hooks) { [] }
+      let(:group) do
+        log = hooks
+        RSpec.describe("Outer") do
+          before(:context) { log << :outer }
+          it("o1") { log << :o1 }
+          context("A") do
+            before(:context) { log << :a }
+            it("a1") { log << :a1 }
+            it("a2") { log << :a2 }
+          end
+          context("B") do
+            before(:context) { log << :b }
+            it("b1") { log << :b1 }
+            it("b2") do |example|
+              log << :b2
+              raise "b2 fails" if example.metadata[:fail]
+            end
+          end
+        end
+      end
+
+      def ids(*descriptions)
+        group.descendants.flat_map(&:examples).select { |example| descriptions.include?(example.description) }.map(&:id)
+      end
+
+      def unit_worker
+        Worker.new(2, [Unit.new(group)], jobs.first, results.last,
+                   :stderr => stderr, :exit => lambda { |status| exits << [:exit, status] },
+                   :exit_now => lambda { |status| exits << [:exit_now, status] },
+                   :trap => lambda { |*| }, :watch_coordinator => false)
+      end
+
+      it "runs only those examples and the context hooks of the groups containing them, as `rspec path[ids]` would, and then the whole group as before" do
+        RSpec.configuration.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+        jobs.last.send([:run, 0, group.id, ids("a2")])
+        jobs.last.send([:run, 1, group.id, ids("o1", "b1")])
+        jobs.last.send([:run, 2, group.id])
+        jobs.last.send([:stop])
+
+        unit_worker.run
+
+        expect(hooks).to eq([:outer, :a, :a2, :outer, :o1, :b, :b1, :outer, :o1, :a, :a1, :a2, :b, :b1, :b2])
+        started = frames.select { |frame| frame.first == :group_started }.map { |frame| frame[1] }
+        expect(started.first(2)).to eq([group.id, group.children[0].id])
+        expect(group.descendant_filtered_examples.size).to eq(5)
+        expect(group.children.map { |child| child.descendant_filtered_examples.size }).to eq([2, 2])
+      end
+
+      it "restores what the group runs when a selected example fails" do
+        RSpec.configuration.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+        group.children[1].examples.last.metadata[:fail] = true
+        jobs.last.send([:run, 0, group.id, ids("b2")])
+        jobs.last.send([:stop])
+
+        unit_worker.run
+
+        expect(frames.find { |frame| frame.first == :unit_finished }).to eq([:unit_finished, 0, false, false, false])
+        expect(hooks).to eq([:outer, :b, :b2])
+        expect(group.descendant_filtered_examples.map(&:description)).to eq(%w[o1 a1 a2 b1 b2])
+        expect(RSpec.world.filtered_examples[group.children[1]].size).to eq(2)
       end
     end
 
