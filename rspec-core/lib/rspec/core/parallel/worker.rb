@@ -136,8 +136,6 @@ module RSpec
               message = @jobs.receive
             end
           end
-          # Those its `after(:suite)` hooks made, which a serial run counts too.
-          @reporter.forward_expectation_count
 
           true
         rescue SystemExit => e
@@ -148,6 +146,9 @@ module RSpec
             send_exiting(e)
           end
           raise
+        ensure
+          # Those its `after(:suite)` hooks made, which a serial run counts too.
+          forward_expectation_count
         end
 
         # Arms the watchdog and tells the coordinator -- which then bounds the
@@ -164,7 +165,16 @@ module RSpec
           exception = $!
           @exit_cause = exit_cause(exception, 'the code it ran')
           arm_watchdog
+          # Those of a unit that `exit` or a signal cut short, too.
+          forward_expectation_count
           send_exiting(exception)
+        end
+
+        # @private
+        def forward_expectation_count
+          @reporter.forward_expectation_count
+        rescue Errno::EPIPE, IOError
+          nil # the coordinator is gone or no longer reads it
         end
 
         # `[:exiting, cause, exit_status]`: sent on leaving the job loop, and

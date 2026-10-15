@@ -1000,14 +1000,14 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
           (File.write('loading.pid.tmp', Process.pid.to_s); File.rename('loading.pid.tmp', 'loading.pid'); sleep 600) if ENV['TEST_ENV_NUMBER'] == '2'
           RSpec.describe('S#{i}') do
             it('keeps the other worker busy past the deadline') do
-              give_up = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
+              $give_up ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
               loading = lambda do
                 pid = File.exist?('loading.pid') && Integer(File.read('loading.pid'))
                 !pid || Process.kill(0, pid)
               rescue Errno::ESRCH
                 false
               end
-              sleep 0.05 while loading.call && Process.clock_gettime(Process::CLOCK_MONOTONIC) < give_up
+              sleep 0.05 while loading.call && Process.clock_gettime(Process::CLOCK_MONOTONIC) < $give_up
             end
           end
         "

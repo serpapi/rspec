@@ -323,6 +323,44 @@ module RSpec::Core::Parallel
         ])
       end
 
+      it "forwards the expectations of a unit `exit` cut short before saying it is leaving, and those of `after(:suite)` hooks after", :skip => jruby_rescues_exit do
+        exiting = RSpec.describe("Exits") do
+          it("exits") do
+            2.times { RSpec.configuration.reporter.increment_expectation_count }
+            exit 3
+          end
+        end
+        instance = Worker.new(2, [Unit.new(exiting)], jobs.first, results.last,
+                              :stderr => stderr, :exit => lambda { |_| }, :exit_now => lambda { |_| },
+                              :trap => lambda { |*| }, :watch_coordinator => false)
+        allow(instance).to receive(:arm_watchdog)
+        RSpec.configuration.after(:suite) { RSpec.configuration.reporter.increment_expectation_count }
+        jobs.last.send([:run, 0, exiting.id])
+        jobs.last.send([:stop])
+
+        expect { instance.run }.to raise_error(SystemExit)
+
+        expect(frames.select { |f| [:expectations, :exiting].include?(f.first) }).to eq([
+          [:expectations, 2],
+          [:exiting, "the code it ran called `exit` or `abort` (status 3)", 3],
+          [:expectations, 1]
+        ])
+      end
+
+      it "still exits normally when nothing reads the expectations its `after(:suite)` hooks counted" do
+        reader = results.first
+        RSpec.configuration.after(:suite) do
+          reader.close
+          RSpec.configuration.reporter.increment_expectation_count
+        end
+        jobs.last.send([:run, 0, groups[0].id])
+        jobs.last.send([:stop])
+
+        worker.run
+
+        expect(exits).to eq([[:exit, 0]])
+      end
+
       it "names a signal or another exception that ends the process" do
         expect(worker.exit_cause(SignalException.new("TERM"), "the code it ran")).to eq("it received SIGTERM")
         expect(worker.exit_cause(NoMemoryError.new("too much"), "the code it ran")).to eq(
