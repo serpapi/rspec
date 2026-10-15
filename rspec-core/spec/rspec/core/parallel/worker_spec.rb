@@ -500,11 +500,14 @@ module RSpec::Core::Parallel
           write_spec_file(dir, "RSpec.deprecate('old_thing')\nraise 'boom at load'\n")
           thread = run_in_thread(loading_worker)
 
-          expect(results.first.receive).to eq([:started])
+          # Expectations made while the worker runs would count as its own
+          # with an rspec-expectations that counts them (rspec/rspec#305).
+          started = results.first.receive
           kind, digest, failure = results.first.receive
           jobs.last.send([:stop])
           expect(thread.join(10)).to be_truthy
 
+          expect(started).to eq([:started])
           expect([kind, digest]).to eq([:loaded, RSpec::Core::Parallel.suite_digest(RSpec.world)])
           expect(failure).to match(/\AAn error occurred while loading .*loaded_spec\.rb\. RuntimeError: boom at load\z/)
           expect(frames).to eq([])
