@@ -272,6 +272,49 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     expect(last_cmd_exit_status).to eq(0)
   end
 
+  it 'shows formatters the metadata an example set, changed or deleted in a worker, as a serial run does' do
+    write_file_formatted 'spec/support/metadata_formatter.rb', "
+      class MetadataFormatter
+        RSpec::Core::Formatters.register self, :example_passed
+
+        def initialize(output)
+          @output = output
+        end
+
+        def example_passed(notification)
+          metadata = notification.example.metadata
+          @output.puts \"META \#{notification.example.description}: \#{metadata[:screenshot].inspect} \" \\
+                       \"\#{metadata[:tags].inspect} \#{metadata.key?(:gone)} \#{metadata[:callback].class}\"
+        end
+      end
+    "
+    4.times do |i|
+      write_file_formatted "spec/m#{i}_spec.rb", "
+        RSpec.describe('M#{i}', :gone => true) do
+          it('e#{i}', :tags => ['a']) do |ex|
+            ex.metadata[:screenshot] = 'shot-#{i}.png'
+            ex.metadata[:tags] << 'b'
+            ex.metadata.delete(:gone)
+          end
+          it('callback#{i}') { |ex| ex.metadata[:callback] = lambda {} }
+        end
+      "
+    end
+    options = '--require ./spec/support/metadata_formatter --format progress --format MetadataFormatter'
+
+    run_rspec options
+    serial = last_cmd_stdout.scan(/META .*$/).sort
+    expect(serial.size).to eq(8)
+    expect(serial.first).to eq("META callback0: nil nil true Proc")
+    expect(serial).to include("META e3: \"shot-3.png\" [\"a\", \"b\"] false NilClass")
+
+    run_rspec "#{options} --parallel=2"
+    parallel = last_cmd_stdout.scan(/META .*$/).sort
+    expect(parallel).to eq(serial.map { |line| line.sub(/ Proc$/, ' NilClass') })
+    expect(last_cmd_stderr.scan(/set example metadata :callback to a Proc/).size).to eq(1)
+    expect(last_cmd_exit_status).to eq(0)
+  end
+
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
     write_file_formatted 'spec/support/my_formatter.rb', "
       class MyAppError < StandardError; end
