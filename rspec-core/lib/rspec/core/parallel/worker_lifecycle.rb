@@ -90,7 +90,7 @@ module RSpec
           worker.close_child_ends
           worker.starting = true
           # A worker forked before loading gets the loading deadline instead.
-          worker.deadline = now + @configuration.parallel_shutdown_timeout unless worker.loading
+          worker.start_deadline = now + @configuration.parallel_shutdown_timeout unless worker.loading
           true
         rescue *OUT_OF_RESOURCES => e
           if worker

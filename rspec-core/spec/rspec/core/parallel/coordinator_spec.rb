@@ -121,7 +121,7 @@ module RSpec::Core::Parallel
         when :partial_frame  then stall_after { results.io.write("999\nabc") }
         when :closes_results then stall_after { results.close }
         when :leaves_and_hangs then stall_after { leave_for_a_signal(jobs, results) }
-        when :never_loads, :never_starts then sleep
+        when :never_loads, :never_starts, :starts_once_asked_to_quit then stall(behaviour, handle, results)
         when :dies_loading   then Thread.current.kill
         else
           report_loaded(results, behaviour) if handle.loading
@@ -141,6 +141,15 @@ module RSpec::Core::Parallel
     def send_started(results, behaviour)
       fakes = [:garbage, :partial_frame, :closes_results, :leaves_and_hangs, :never_loads, :dies_loading]
       results.send([:started]) if fakes.include?(behaviour)
+    end
+
+    # One that reports back only once it has been asked to stop early stalls then.
+    def stall(behaviour, handle, results)
+      if behaviour == :starts_once_asked_to_quit
+        sleep 0.01 until handle.quit_sent
+        results.send([:started])
+      end
+      sleep
     end
 
     def stall_after
@@ -513,6 +522,20 @@ module RSpec::Core::Parallel
     # on a loaded machine.
     describe "a worker that is asked to stop early but does not" do
       before { config.parallel_shutdown_timeout = 0.5 }
+
+      it "is terminated after the shutdown timeout even when it reports back only after it was asked to stop" do
+        config.fail_fast = true
+        worker_behaviours[2] = :starts_once_asked_to_quit
+        groups = [failing_group("Fails"), passing_group("Held by the late worker")]
+        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+        run = Thread.new { coordinator(groups).run }
+
+        expect(run.join(10)).to be_truthy
+        expect(run.value).to eq(config.failure_exit_code)
+        expect(process.signals.map(&:first)).to eq(["TERM"])
+        expect(messages).to include("did not stop within 0.5 seconds of being asked to stop early")
+      end
 
       it "is terminated after the shutdown timeout so a cancelled run still ends" do
         config.fail_fast = true
@@ -938,15 +961,16 @@ module RSpec::Core::Parallel
     end
 
     describe "a worker that never reports back after it was forked" do
-      it "gets no work, and is killed once the other worker has run everything" do
+      it "is terminated once it misses its start deadline, and the group it was given runs in another worker" do
+        config.parallel_shutdown_timeout = 0.05
         worker_behaviours[2] = :never_starts
 
         exit_code = coordinator([passing_group("A"), passing_group("B")]).run
 
         expect(exit_code).to eq(0)
         expect(messages).to include("2 examples, 0 failures")
-        expect(messages).not_to include("never reported back")
-        expect(process.signals.map(&:first)).to eq(["KILL"])
+        expect(messages.scan("never reported back after it was forked").size).to eq(1)
+        expect(process.signals.map(&:first)).to eq(["TERM"])
       end
 
       it "is terminated once it misses its start deadline, and what no worker ran is reported" do

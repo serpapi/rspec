@@ -111,12 +111,18 @@ module RSpec
 
         # Stuck between `fork` and RSpec's code, as a fork-time deadlock (in
         # Ruby, or a library's fork handler) leaves a process: it has run
-        # nothing, so the run's results stay complete without it.
+        # nothing, so the group it was given goes to another worker as is.
         def never_started(worker)
           worker.loading = false
           report "#{worker.description} never reported back after it was forked (stuck before running any of " \
                  "RSpec's code, as a deadlock in a fork handler would leave it), so it was sent SIGTERM. It ran " \
                  "nothing; the other workers run its share."
+          if (index = worker.current_unit) && accepting_work?
+            @unit_states[index] = :pending
+            @queue.unshift(index)
+            worker.current_unit = nil
+          end
+          abort_unit(worker)
           worker.results.close
         end
 

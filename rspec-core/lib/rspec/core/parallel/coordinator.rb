@@ -224,7 +224,7 @@ module RSpec
         # Anything it sends shows it got past forking and runs RSpec's code.
         def worker_started(worker)
           worker.starting = false
-          worker.deadline = nil unless worker.loading || worker.escalation
+          worker.clear_start_deadline
         end
 
         def non_example_failure(payload, context_description)
@@ -296,8 +296,8 @@ module RSpec
         def dispatch_work
           busy = @workers.count(&:busy?)
           @workers.each do |worker|
-            if worker.loading || worker.starting
-              # Nothing is left to give it once it has loaded or started.
+            if worker.loading
+              # Nothing is left to give it once it has loaded.
               dismiss_worker(worker) if worker.state == :running && nothing_left?(busy)
             elsif worker.idle?
               if !@quitting && !@queue.empty?

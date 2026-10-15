@@ -927,10 +927,10 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       end
     end
 
-    def write_suite(first_group_sleeps)
+    def write_suite
       write_file_formatted 'spec/stuck_at_fork_spec.rb', "
         RSpec.configure { |c| c.parallel_shutdown_timeout = 0.5 }
-        RSpec.describe('S1') { it('passes') { sleep #{first_group_sleeps} } }
+        RSpec.describe('S1') { it('passes') { } }
         RSpec.describe('S2') { it('passes') { } }
       "
     end
@@ -939,8 +939,8 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       output.scan(/\(pid (\d+)\)/).flatten.map(&:to_i).uniq
     end
 
-    it 'gets no work, is killed once it misses its start deadline, and the other workers run everything' do
-      write_suite(1.5)
+    it 'is terminated, then killed, once it misses its start deadline, and its group runs in another worker' do
+      write_suite
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       run_rspec "--parallel=2 --order defined spec/stuck_at_fork_spec.rb"
@@ -955,18 +955,6 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       pids = pids_in(last_cmd_stdout)
       expect(pids.size).to eq(1)
       expect { Process.kill(0, pids.first) }.to raise_error(Errno::ESRCH)
-    end
-
-    it 'is killed, without waiting for its deadline, once the other workers have run everything' do
-      write_suite(0)
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-
-      run_rspec "--parallel=2 spec/stuck_at_fork_spec.rb"
-
-      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 5
-      expect(last_cmd_stdout).to include("2 examples, 0 failures")
-      expect(last_cmd_stdout).not_to include("never reported back", "SIGTERM")
-      expect(last_cmd_exit_status).to eq(0)
     end
   end
 

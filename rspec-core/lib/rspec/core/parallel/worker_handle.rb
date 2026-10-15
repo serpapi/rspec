@@ -30,7 +30,7 @@ module RSpec
           @quit_sent = false
           @exiting = false
           @loading = false
-          @starting = false
+          @starting = @start_deadline = false
           @pid = @current_unit = @deadline = @deadline_set_at = @escalation = @exit_status = @exit_cause = @called_exit = nil
           @started_example_ids = {}
           @last_started_group = nil
@@ -40,6 +40,17 @@ module RSpec
         def deadline=(value)
           @deadline = value
           @deadline_set_at = value && Parallel.monotonic_time
+          @start_deadline = false
+        end
+
+        # The deadline for its first frame, which any other deadline replaces.
+        def start_deadline=(value)
+          self.deadline = value
+          @start_deadline = true
+        end
+
+        def clear_start_deadline
+          self.deadline = nil if @start_deadline
         end
 
         # Moves the deadline back without changing when it was set.
@@ -108,7 +119,7 @@ module RSpec
         end
 
         def idle?
-          @state == :running && @current_unit.nil? && !@loading && !@starting
+          @state == :running && @current_unit.nil? && !@loading
         end
 
         def busy?
