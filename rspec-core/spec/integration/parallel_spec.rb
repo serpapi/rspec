@@ -953,7 +953,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       # process's own loading (and so worker 2's deadline) took.
       3.times do |i|
         write_file_formatted "spec/s#{i}_spec.rb", "
-          (File.write('loading.pid', Process.pid.to_s); sleep 600) if ENV['TEST_ENV_NUMBER'] == '2'
+          (File.write('loading.pid.tmp', Process.pid.to_s); File.rename('loading.pid.tmp', 'loading.pid'); sleep 600) if ENV['TEST_ENV_NUMBER'] == '2'
           RSpec.describe('S#{i}') do
             it('keeps the other worker busy past the deadline') do
               give_up = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
