@@ -39,6 +39,8 @@ module RSpec
                   "sent SIGTERM. Raise `config.parallel_shutdown_timeout` if they legitimately need longer.")
             abort_unit(worker)
             worker.results.close
+          elsif worker.starting
+            never_started(worker)
           elsif worker.state == :stopping
             error("#{worker.description} did not exit within #{timeout} of finishing its last example group (its " \
                   "`after(:suite)` hooks or `at_exit` handlers may be stuck), so it was sent SIGTERM. Raise " \
@@ -105,6 +107,17 @@ module RSpec
 
           @exit_status = exit_status
           report "#{worker.description}: then #{cause}, so the run exits with status #{exit_status}." unless @exit_spoiled
+        end
+
+        # Stuck between `fork` and RSpec's code, as a fork-time deadlock (in
+        # Ruby, or a library's fork handler) leaves a process: it has run
+        # nothing, so the run's results stay complete without it.
+        def never_started(worker)
+          worker.loading = false
+          report "#{worker.description} never reported back after it was forked (stuck before running any of " \
+                 "RSpec's code, as a deadlock in a fork handler would leave it), so it was sent SIGTERM. It ran " \
+                 "nothing; the other workers run its share."
+          worker.results.close
         end
 
         # The worker can no longer be relied on, and nothing it sends from now

@@ -14,6 +14,8 @@ module RSpec
         # Forked before the spec files were loaded and has not yet reported
         # what it loaded.
         attr_accessor :loading
+        # Forked, and has not sent anything yet.
+        attr_accessor :starting
 
         def initialize(number)
           @number = number
@@ -28,6 +30,7 @@ module RSpec
           @quit_sent = false
           @exiting = false
           @loading = false
+          @starting = false
           @pid = @current_unit = @deadline = @deadline_set_at = @escalation = @exit_status = @exit_cause = @called_exit = nil
           @started_example_ids = {}
           @last_started_group = nil
@@ -105,7 +108,7 @@ module RSpec
         end
 
         def idle?
-          @state == :running && @current_unit.nil? && !@loading
+          @state == :running && @current_unit.nil? && !@loading && !@starting
         end
 
         def busy?

@@ -48,6 +48,8 @@ module RSpec
 
         # Never returns: ends the process when the coordinator has no more work.
         def run
+          # First, so the coordinator knows it got past `fork`.
+          @results.send([:started])
           watch_coordinator if @watch_coordinator
           prepare
           load_spec_files unless @example_groups

@@ -199,7 +199,7 @@ module RSpec::Core::Parallel
         end
 
         expect(hooks).to eq([])
-        expect(frames).to eq([])
+        expect(frames).to eq([[:started], [:started]])
       end
 
       it "exits at once when the coordinator goes away before giving it anything" do
@@ -480,6 +480,7 @@ module RSpec::Core::Parallel
           write_spec_file(dir, "RSpec.describe('Loaded here') { it('passes') { } }")
           thread = run_in_thread(loading_worker)
 
+          expect(results.first.receive).to eq([:started])
           loaded = results.first.receive
           group = RSpec.world.example_groups.first
           expect(loaded).to eq([:loaded, RSpec::Core::Parallel.suite_digest(RSpec.world), nil])
@@ -499,6 +500,7 @@ module RSpec::Core::Parallel
           write_spec_file(dir, "RSpec.deprecate('old_thing')\nraise 'boom at load'\n")
           thread = run_in_thread(loading_worker)
 
+          expect(results.first.receive).to eq([:started])
           kind, digest, failure = results.first.receive
           jobs.last.send([:stop])
           expect(thread.join(10)).to be_truthy

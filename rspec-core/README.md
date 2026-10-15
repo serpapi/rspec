@@ -372,6 +372,10 @@ with `config.error_exit_code`. The coordinator never waits unboundedly for a
 finished worker -- not even one whose watchdog cannot run and that ignores
 SIGTERM: the run waits for it about the shutdown timeout plus 11 seconds at
 most (a second of grace, then 5 seconds after SIGTERM and 5 after SIGKILL).
+A worker that never gets past `fork` (deadlocked in a fork handler, in Ruby or
+in a library) is given no work: it is killed once the other workers have run
+everything, or terminated the same way once it has not reported back within
+the shutdown timeout of being forked.
 
 A worker that crashes or is killed (`exit!`, a segfault, the OOM killer, ...)
 fails the example it was running with the reason, so the example is listed

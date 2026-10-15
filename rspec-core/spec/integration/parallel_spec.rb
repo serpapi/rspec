@@ -911,6 +911,65 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     end
   end
 
+  # As a worker deadlocked in a fork handler (in Ruby, or a library's) is:
+  # it never runs any of RSpec's code, and SIGTERM does not end it.
+  describe 'a worker stuck before it runs any of its code' do
+    before do
+      stub_const("RSpec::Core::Parallel::Coordinator::TERM_GRACE", 0.3)
+      stub_const("RSpec::Core::Parallel::Coordinator::KILL_GRACE", 0.3)
+      # Forked workers inherit this stub.
+      allow_any_instance_of(RSpec::Core::Parallel::Worker).to receive(:run).and_wrap_original do |original, *args|
+        if original.receiver.number == 2
+          trap('TERM', 'IGNORE')
+          sleep
+        end
+        original.call(*args)
+      end
+    end
+
+    def write_suite(first_group_sleeps)
+      write_file_formatted 'spec/stuck_at_fork_spec.rb', "
+        RSpec.configure { |c| c.parallel_shutdown_timeout = 0.5 }
+        RSpec.describe('S1') { it('passes') { sleep #{first_group_sleeps} } }
+        RSpec.describe('S2') { it('passes') { } }
+      "
+    end
+
+    def pids_in(output)
+      output.scan(/\(pid (\d+)\)/).flatten.map(&:to_i).uniq
+    end
+
+    it 'gets no work, is killed once it misses its start deadline, and the other workers run everything' do
+      write_suite(1.5)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--parallel=2 --order defined spec/stuck_at_fork_spec.rb"
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
+      expect(last_cmd_stdout).to include(
+        "2 examples, 0 failures",
+        "never reported back after it was forked",
+        "still alive 0.3 seconds after SIGTERM; sending SIGKILL"
+      )
+      expect(last_cmd_exit_status).to eq(0)
+      pids = pids_in(last_cmd_stdout)
+      expect(pids.size).to eq(1)
+      expect { Process.kill(0, pids.first) }.to raise_error(Errno::ESRCH)
+    end
+
+    it 'is killed, without waiting for its deadline, once the other workers have run everything' do
+      write_suite(0)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--parallel=2 spec/stuck_at_fork_spec.rb"
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 5
+      expect(last_cmd_stdout).to include("2 examples, 0 failures")
+      expect(last_cmd_stdout).not_to include("never reported back", "SIGTERM")
+      expect(last_cmd_exit_status).to eq(0)
+    end
+  end
+
   it 'falls back to a serial run with a warning inside another parallel worker' do
     write_file_formatted 'spec/a_spec.rb', "
       RSpec.describe('A') { it('passes') { expect(RSpec.configuration.parallel_worker_number).to be_nil } }
