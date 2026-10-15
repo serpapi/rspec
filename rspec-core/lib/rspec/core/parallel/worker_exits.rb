@@ -114,16 +114,24 @@ module RSpec
         # nothing, so the group it was given goes to another worker as is.
         def never_started(worker)
           worker.loading = false
+          index = worker.current_unit
+          requeue = index && accepting_work?
           report "#{worker.description} never reported back after it was forked (stuck before running any of " \
                  "RSpec's code, as a deadlock in a fork handler would leave it), so it was sent SIGTERM. It ran " \
-                 "nothing; the other workers run its share."
-          if (index = worker.current_unit) && accepting_work?
+                 "nothing#{never_started_outcome(index, requeue)}."
+          if requeue
             @unit_states[index] = :pending
             @queue.unshift(index)
             worker.current_unit = nil
           end
           abort_unit(worker)
           worker.results.close
+        end
+
+        def never_started_outcome(index, requeue)
+          return "" unless index
+
+          requeue ? "; the group it was given runs in another worker" : "; the group it was given did not run"
         end
 
         # The worker can no longer be relied on, and nothing it sends from now

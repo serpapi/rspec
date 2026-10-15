@@ -970,7 +970,22 @@ module RSpec::Core::Parallel
         expect(exit_code).to eq(0)
         expect(messages).to include("2 examples, 0 failures")
         expect(messages.scan("never reported back after it was forked").size).to eq(1)
+        expect(messages).to include("the group it was given runs in another worker")
         expect(process.signals.map(&:first)).to eq(["TERM"])
+      end
+
+      it "says the group it was given did not run when the run stops early" do
+        config.parallel_shutdown_timeout = 0.05
+        config.fail_fast = true
+        worker_behaviours[2] = :never_starts
+        groups = [failing_group("Fails"), passing_group("Held by the stuck worker")]
+        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+        exit_code = coordinator(groups).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(messages).to include("never reported back after it was forked", "the group it was given did not run")
+        expect(messages).to include("1 example, 1 failure")
       end
 
       it "is terminated once it misses its start deadline, and what no worker ran is reported" do
