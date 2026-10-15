@@ -38,10 +38,10 @@ jobs:
           ruby-version: '3.4'
       - run: choco install ansicon
       - run: ../script/bundle
-      - name: whole suite, serial
-        run: ruby ../bin/rspec spec --backtrace --format progress
+      - name: whole suite, serial, bundle exec
+        run: bundle exec rspec spec --backtrace --format progress
       - name: --parallel=2 without fork
-        if: matrix.ref == '559e96f1672d9d6cc00dd680f52e5a13adbcd565'
+        if: always() && matrix.ref == '559e96f1672d9d6cc00dd680f52e5a13adbcd565'
         run: |
           ruby -e 'puts "Process.respond_to?(:fork) => #{Process.respond_to?(:fork)}"'
-          ruby ../bin/rspec spec/rspec/core/parallel_spec.rb spec/rspec/core/parallel --parallel=2 --format progress; echo "exit status $?"
+          bundle exec rspec spec/rspec/core/parallel_spec.rb spec/rspec/core/parallel spec/integration/parallel_spec.rb --parallel=2 --format progress; echo "exit status $?"
