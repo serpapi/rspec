@@ -949,10 +949,23 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
 
     it 'terminates a worker still loading long after the coordinating process finished, and runs its groups elsewhere' do
       write_file_formatted 'spec/spec_helper.rb', "RSpec.configure { |c| c.parallel_shutdown_timeout = 1 }"
+      # Worker 1 stays busy until worker 2 is gone, however long this
+      # process's own loading (and so worker 2's deadline) took.
       3.times do |i|
         write_file_formatted "spec/s#{i}_spec.rb", "
-          sleep 600 if ENV['TEST_ENV_NUMBER'] == '2'
-          RSpec.describe('S#{i}') { it('keeps the other worker busy past the deadline') { sleep 0.7 } }
+          (File.write('loading.pid', Process.pid.to_s); sleep 600) if ENV['TEST_ENV_NUMBER'] == '2'
+          RSpec.describe('S#{i}') do
+            it('keeps the other worker busy past the deadline') do
+              give_up = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
+              loading = lambda do
+                pid = File.exist?('loading.pid') && Integer(File.read('loading.pid'))
+                !pid || Process.kill(0, pid)
+              rescue Errno::ESRCH
+                false
+              end
+              sleep 0.05 while loading.call && Process.clock_gettime(Process::CLOCK_MONOTONIC) < give_up
+            end
+          end
         "
       end
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
