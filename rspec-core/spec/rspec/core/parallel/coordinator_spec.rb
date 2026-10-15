@@ -137,10 +137,14 @@ module RSpec::Core::Parallel
       @process.register(thread) { exit_status && FakeProcess::Status.new(exit_status, nil) }
     end
 
-    # What a real worker sends first, which the fakes standing in for one send too.
+    # What a real worker sends first, which the fakes standing in for one send
+    # too -- and then go on as they would, even if nothing reads it any more
+    # (dismissed before their thread got going, say).
     def send_started(results, behaviour)
       fakes = [:garbage, :partial_frame, :closes_results, :leaves_and_hangs, :never_loads, :dies_loading]
       results.send([:started]) if fakes.include?(behaviour)
+    rescue Errno::EPIPE, IOError
+      nil
     end
 
     # One that reports back only once it has been asked to stop early stalls then.
