@@ -13,42 +13,48 @@ env:
   RSPEC_VERSION: "= 4.0.0.pre"
 
 jobs:
-  rspec-core:
-    name: ${{ matrix.label }} on Windows, Ruby 3.4
+  libraries:
+    name: ${{ matrix.library }} suite on Windows, Ruby 3.4
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: base df877b73ab
-            ref: df877b73ab2a01bc7e3b5a39e7e252e8d9bb67a3
-          - label: head 7c924a306
-            ref: 7c924a306b18171aefc15ab6064edc0931e4e92f
+        library: [rspec-core, rspec-expectations, rspec-mocks, rspec-support]
     defaults:
       run:
         shell: bash
-        working-directory: rspec-core
+        working-directory: ${{ matrix.library }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ matrix.ref }}
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: '3.4'
       - run: choco install ansicon
       - run: ../script/bundle
       - name: whole suite, serial, bundle exec
-        run: bundle exec rspec spec --backtrace --format progress
-      - name: bisect specs with $LOAD_PATH joined by File::PATH_SEPARATOR (hypothesis test, not committed)
-        if: always()
-        run: |
-          grep -n "join(':')" lib/rspec/core/bisect/shell_command.rb
-          sed -i "s/join(':')/join(File::PATH_SEPARATOR)/" lib/rspec/core/bisect/shell_command.rb
-          grep -n "PATH_SEPARATOR" lib/rspec/core/bisect/shell_command.rb
-          bundle exec rspec spec/integration/bisect_spec.rb spec/integration/bisect_runners_spec.rb --format progress; echo "exit status $?"
-      - name: --parallel=2 without fork
-        if: always() && matrix.ref == '7c924a306b18171aefc15ab6064edc0931e4e92f'
-        run: |
-          ruby -e 'puts "Process.respond_to?(:fork) => #{Process.respond_to?(:fork)}"'
-          bundle exec rspec spec/rspec/core/parallel_spec.rb spec/rspec/core/parallel spec/integration/parallel_spec.rb --parallel=2 --format progress; echo "exit status $?"
+        run: bundle exec rspec --backtrace --format progress
+
+  spawn-probe:
+    name: spawn probe ${{ matrix.os }} ${{ matrix.ruby }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, ruby: '3.4' }
+          - { os: windows-latest, ruby: '3.0' }
+          - { os: ubuntu-latest, ruby: jruby-9.4 }
+          - { os: ubuntu-latest, ruby: jruby-10.0 }
+          - { os: ubuntu-latest, ruby: jruby-10.1 }
+          - { os: ubuntu-latest, ruby: truffleruby }
+          - { os: macos-latest, ruby: jruby-10.0 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - run: ruby .github/probe/spawn_probe.rb
