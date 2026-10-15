@@ -212,6 +212,17 @@ module RSpec::Core::Parallel
       expect(jobs.first.receive).to eq([:run, 7])
     end
 
+    it "forwards the expectations counted since it last did, and nothing when there were none" do
+      reporter.forward_expectation_count
+      3.times { reporter.increment_expectation_count }
+      reporter.forward_expectation_count
+      reporter.forward_expectation_count
+      reporter.increment_expectation_count
+      reporter.forward_expectation_count
+
+      expect(frames).to eq([[:expectations, 3], [:expectations, 1]])
+    end
+
     it "keeps the reporter's own failure bookkeeping so fail-fast works inside the worker" do
       RSpec.configuration.fail_fast = true
       group = RSpec.describe("G") do

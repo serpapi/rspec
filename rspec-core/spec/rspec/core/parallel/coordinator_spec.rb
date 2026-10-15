@@ -124,7 +124,7 @@ module RSpec::Core::Parallel
         when :dies_loading   then Thread.current.kill
         else
           report_loaded(results, behaviour) if handle.loading
-          send_unknown_ids(results) if behaviour == :unknown_ids
+          send_extra_frames(results, behaviour)
           run_fake_worker(handle.number, jobs, results, behaviour) { |status| exit_status = status }
         end
       ensure
@@ -167,6 +167,11 @@ module RSpec::Core::Parallel
       digest = digest.merge("./spec/a_spec.rb" => "a", "./spec/b_spec.rb" => "b") if behaviour == :loads_other_files
       failure = "An error occurred while loading ./spec/x_spec.rb. RuntimeError: boom" if behaviour == :fails_to_load
       results.send([:loaded, digest, failure])
+    end
+
+    def send_extra_frames(results, behaviour)
+      send_unknown_ids(results) if behaviour == :unknown_ids
+      results.send([:expectations, 3]) if behaviour == :counts_expectations
     end
 
     def send_unknown_ids(results)
@@ -769,6 +774,30 @@ module RSpec::Core::Parallel
       expect(messages.scan("./nope_spec.rb[1:1], which was not defined when the suite was loaded").size).to eq(1)
       expect(messages.scan("./nope_spec.rb[1], which was not defined").size).to eq(1)
       expect(messages).to include("sent an unexpected :weird frame")
+      expect(messages).to include("2 examples, 0 failures")
+    end
+
+    it "adds the expectations a worker counted to its reporter's count, when that keeps one" do
+      worker_behaviours[1] = :counts_expectations
+      counted = 0
+      config.reporter.define_singleton_method(:increment_expectation_count) { counted += 1 }
+
+      exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+
+      expect(exit_code).to eq(0)
+      expect(counted).to eq(3)
+      expect(messages).not_to include("unexpected")
+    end
+
+    it "ignores the expectations a worker counted when its reporter keeps no count" do
+      worker_behaviours[1] = :counts_expectations
+      allow(config.reporter).to receive(:respond_to?).and_call_original
+      allow(config.reporter).to receive(:respond_to?).with(:increment_expectation_count).and_return(false)
+
+      exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+
+      expect(exit_code).to eq(0)
+      expect(messages).not_to include("unexpected")
       expect(messages).to include("2 examples, 0 failures")
     end
 

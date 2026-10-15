@@ -136,6 +136,8 @@ module RSpec
               message = @jobs.receive
             end
           end
+          # Those its `after(:suite)` hooks made, which a serial run counts too.
+          @reporter.forward_expectation_count
 
           true
         rescue SystemExit => e
@@ -192,6 +194,7 @@ module RSpec
         def run_unit(index, id, example_ids=nil)
           group = groups_by_id.fetch(id)
           passed = example_ids ? run_only(group, example_ids) : group.run(@reporter)
+          @reporter.forward_expectation_count
           @results.send([:unit_finished, index, passed ? true : false,
                          !!@world.wants_to_quit, !!@world.non_example_failure])
         end

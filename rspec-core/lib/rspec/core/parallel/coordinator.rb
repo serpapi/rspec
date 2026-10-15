@@ -204,8 +204,19 @@ module RSpec
           when :non_example_failure then non_example_failure(*rest)
           when :exiting             then exiting(worker, *rest)
           when :loaded              then loaded(worker, *rest)
+          when :expectations        then expectations(*rest)
           else report "#{worker.description} sent an unexpected #{kind.inspect} frame, which was ignored."
           end
+        end
+
+        # Expectations counted in a worker, for a reporter that counts them
+        # (`increment_expectation_count`, from an rspec-expectations that
+        # reports every expectation to it).
+        def expectations(count)
+          reporter = @configuration.reporter
+          return unless reporter.respond_to?(:increment_expectation_count)
+
+          count.times { reporter.increment_expectation_count }
         end
 
         def non_example_failure(payload, context_description)

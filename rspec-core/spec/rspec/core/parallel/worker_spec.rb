@@ -165,6 +165,27 @@ module RSpec::Core::Parallel
         expect(all.map(&:first)).to include(:group_started, :example_started, :example_finished, :group_finished)
       end
 
+      it "forwards the expectations counted in each unit before reporting it, and those of `after(:suite)` hooks last" do
+        count = lambda { RSpec.configuration.reporter.increment_expectation_count }
+        groups.first.before(:context) { count.call }
+        groups.first.example("counts twice") { 2.times { count.call } }
+        RSpec.configuration.after(:suite) { count.call }
+
+        jobs.last.send([:run, 0, groups[0].id])
+        jobs.last.send([:run, 1, groups[1].id])
+        jobs.last.send([:stop])
+
+        worker.run
+
+        expect(frames.select { |f| [:expectations, :unit_finished, :exiting].include?(f.first) }).to eq([
+          [:expectations, 3],
+          [:unit_finished, 0, true, false, false],
+          [:unit_finished, 1, false, false, false],
+          [:exiting, nil, nil],
+          [:expectations, 1]
+        ])
+      end
+
       it "exits at once, without running suite hooks or at_exit handlers, when its first job is not a group to run" do
         hooks = []
         RSpec.configuration.before(:suite) { hooks << :before_suite }

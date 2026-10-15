@@ -228,6 +228,50 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     end
   end
 
+  # As rspec-expectations does for every expectation when its reporter counts
+  # them (rspec/rspec#305), the examples here call the configured reporter's
+  # `increment_expectation_count`, which the formatter adds to the reporter
+  # of the coordinating process (or of the serial run).
+  it 'adds up the expectations its workers count, as a serial run does, for a reporter that counts them' do
+    write_file_formatted 'spec/support/counted_expectations.rb', "
+      class CountedExpectations
+        RSpec::Core::Formatters.register self, :start, :dump_summary
+
+        def initialize(output)
+          @output = output
+        end
+
+        def start(_notification)
+          counted = 0
+          reporter = RSpec.configuration.reporter
+          reporter.define_singleton_method(:increment_expectation_count) { counted += 1 }
+          reporter.define_singleton_method(:counted_expectations) { counted }
+        end
+
+        def dump_summary(_notification)
+          @output.puts \"Counted \#{RSpec.configuration.reporter.counted_expectations} expectations\"
+        end
+      end
+    "
+    4.times do |i|
+      write_file_formatted "spec/c#{i}_spec.rb", "
+        RSpec.describe('C#{i}') do
+          before(:context) { RSpec.configuration.reporter.increment_expectation_count }
+          it('counts twice') { 2.times { RSpec.configuration.reporter.increment_expectation_count } }
+          it('counts once') { RSpec.configuration.reporter.increment_expectation_count }
+        end
+      "
+    end
+    options = '--require ./spec/support/counted_expectations --format progress --format CountedExpectations'
+
+    run_rspec options
+    expect(last_cmd_stdout).to include("8 examples, 0 failures", "Counted 16 expectations")
+
+    run_rspec "#{options} --parallel=2"
+    expect(last_cmd_stdout).to include("8 examples, 0 failures", "Counted 16 expectations")
+    expect(last_cmd_exit_status).to eq(0)
+  end
+
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
     write_file_formatted 'spec/support/my_formatter.rb', "
       class MyAppError < StandardError; end
