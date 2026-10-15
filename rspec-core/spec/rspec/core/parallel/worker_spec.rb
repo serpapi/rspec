@@ -165,6 +165,27 @@ module RSpec::Core::Parallel
         expect(all.map(&:first)).to include(:group_started, :example_started, :example_finished, :group_finished)
       end
 
+      it "forwards the expectations counted in each unit before reporting it, and those of `after(:suite)` hooks last" do
+        count = lambda { RSpec.configuration.reporter.increment_expectation_count }
+        groups.first.before(:context) { count.call }
+        groups.first.example("counts twice") { 2.times { count.call } }
+        RSpec.configuration.after(:suite) { count.call }
+
+        jobs.last.send([:run, 0, groups[0].id])
+        jobs.last.send([:run, 1, groups[1].id])
+        jobs.last.send([:stop])
+
+        worker.run
+
+        expect(frames.select { |f| [:expectations, :unit_finished, :exiting].include?(f.first) }).to eq([
+          [:expectations, 3],
+          [:unit_finished, 0, true, false, false],
+          [:unit_finished, 1, false, false, false],
+          [:exiting, nil, nil],
+          [:expectations, 1]
+        ])
+      end
+
       it "exits at once, without running suite hooks or at_exit handlers, when its first job is not a group to run" do
         hooks = []
         RSpec.configuration.before(:suite) { hooks << :before_suite }
@@ -178,7 +199,7 @@ module RSpec::Core::Parallel
         end
 
         expect(hooks).to eq([])
-        expect(frames).to eq([])
+        expect(frames).to eq([[:started], [:started]])
       end
 
       it "exits at once when the coordinator goes away before giving it anything" do
@@ -302,6 +323,44 @@ module RSpec::Core::Parallel
         ])
       end
 
+      it "forwards the expectations of a unit `exit` cut short before saying it is leaving, and those of `after(:suite)` hooks after", :skip => jruby_rescues_exit do
+        exiting = RSpec.describe("Exits") do
+          it("exits") do
+            2.times { RSpec.configuration.reporter.increment_expectation_count }
+            exit 3
+          end
+        end
+        instance = Worker.new(2, [Unit.new(exiting)], jobs.first, results.last,
+                              :stderr => stderr, :exit => lambda { |_| }, :exit_now => lambda { |_| },
+                              :trap => lambda { |*| }, :watch_coordinator => false)
+        allow(instance).to receive(:arm_watchdog)
+        RSpec.configuration.after(:suite) { RSpec.configuration.reporter.increment_expectation_count }
+        jobs.last.send([:run, 0, exiting.id])
+        jobs.last.send([:stop])
+
+        expect { instance.run }.to raise_error(SystemExit)
+
+        expect(frames.select { |f| [:expectations, :exiting].include?(f.first) }).to eq([
+          [:expectations, 2],
+          [:exiting, "the code it ran called `exit` or `abort` (status 3)", 3],
+          [:expectations, 1]
+        ])
+      end
+
+      it "still exits normally when nothing reads the expectations its `after(:suite)` hooks counted" do
+        reader = results.first
+        RSpec.configuration.after(:suite) do
+          reader.close
+          RSpec.configuration.reporter.increment_expectation_count
+        end
+        jobs.last.send([:run, 0, groups[0].id])
+        jobs.last.send([:stop])
+
+        worker.run
+
+        expect(exits).to eq([[:exit, 0]])
+      end
+
       it "names a signal or another exception that ends the process" do
         expect(worker.exit_cause(SignalException.new("TERM"), "the code it ran")).to eq("it received SIGTERM")
         expect(worker.exit_cause(NoMemoryError.new("too much"), "the code it ran")).to eq(
@@ -421,6 +480,7 @@ module RSpec::Core::Parallel
           write_spec_file(dir, "RSpec.describe('Loaded here') { it('passes') { } }")
           thread = run_in_thread(loading_worker)
 
+          expect(results.first.receive).to eq([:started])
           loaded = results.first.receive
           group = RSpec.world.example_groups.first
           expect(loaded).to eq([:loaded, RSpec::Core::Parallel.suite_digest(RSpec.world), nil])
@@ -440,10 +500,14 @@ module RSpec::Core::Parallel
           write_spec_file(dir, "RSpec.deprecate('old_thing')\nraise 'boom at load'\n")
           thread = run_in_thread(loading_worker)
 
+          # Expectations made while the worker runs would count as its own
+          # with an rspec-expectations that counts them (rspec/rspec#305).
+          started = results.first.receive
           kind, digest, failure = results.first.receive
           jobs.last.send([:stop])
           expect(thread.join(10)).to be_truthy
 
+          expect(started).to eq([:started])
           expect([kind, digest]).to eq([:loaded, RSpec::Core::Parallel.suite_digest(RSpec.world)])
           expect(failure).to match(/\AAn error occurred while loading .*loaded_spec\.rb\. RuntimeError: boom at load\z/)
           expect(frames).to eq([])

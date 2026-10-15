@@ -48,6 +48,8 @@ module RSpec
 
         # Never returns: ends the process when the coordinator has no more work.
         def run
+          # First, so the coordinator knows it got past `fork`.
+          @results.send([:started])
           watch_coordinator if @watch_coordinator
           prepare
           load_spec_files unless @example_groups
@@ -146,6 +148,9 @@ module RSpec
             send_exiting(e)
           end
           raise
+        ensure
+          # Those its `after(:suite)` hooks made, which a serial run counts too.
+          forward_expectation_count
         end
 
         # Arms the watchdog and tells the coordinator -- which then bounds the
@@ -162,7 +167,16 @@ module RSpec
           exception = $!
           @exit_cause = exit_cause(exception, 'the code it ran')
           arm_watchdog
+          # Those of a unit that `exit` or a signal cut short, too.
+          forward_expectation_count
           send_exiting(exception)
+        end
+
+        # @private
+        def forward_expectation_count
+          @reporter.forward_expectation_count
+        rescue Errno::EPIPE, IOError
+          nil # the coordinator is gone or no longer reads it
         end
 
         # `[:exiting, cause, exit_status]`: sent on leaving the job loop, and
@@ -192,6 +206,7 @@ module RSpec
         def run_unit(index, id, example_ids=nil)
           group = groups_by_id.fetch(id)
           passed = example_ids ? run_only(group, example_ids) : group.run(@reporter)
+          @reporter.forward_expectation_count
           @results.send([:unit_finished, index, passed ? true : false,
                          !!@world.wants_to_quit, !!@world.non_example_failure])
         end

@@ -186,6 +186,7 @@ module RSpec
         def handle_message(worker, message, bytes)
           kind, *rest = message
           number = worker.number
+          worker_started(worker) if worker.starting
           case kind
           when :group_started    then index.with_group(rest[0]) { |g| group_started(worker, g, rest[1], bytes) }
           when :group_finished   then index.with_group(rest[0]) { |g| @sequencer.group_finished(number, g, rest[1], bytes) }
@@ -204,8 +205,26 @@ module RSpec
           when :non_example_failure then non_example_failure(*rest)
           when :exiting             then exiting(worker, *rest)
           when :loaded              then loaded(worker, *rest)
+          when :expectations        then expectations(*rest)
+          when :started             then nil
           else report "#{worker.description} sent an unexpected #{kind.inspect} frame, which was ignored."
           end
+        end
+
+        # Expectations counted in a worker, for a reporter that counts them
+        # (`increment_expectation_count`, from an rspec-expectations that
+        # reports every expectation to it).
+        def expectations(count)
+          reporter = @configuration.reporter
+          return unless reporter.respond_to?(:increment_expectation_count)
+
+          count.times { reporter.increment_expectation_count }
+        end
+
+        # Anything it sends shows it got past forking and runs RSpec's code.
+        def worker_started(worker)
+          worker.starting = false
+          worker.clear_start_deadline
         end
 
         def non_example_failure(payload, context_description)

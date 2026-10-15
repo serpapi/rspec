@@ -228,6 +228,50 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     end
   end
 
+  # As rspec-expectations does for every expectation when its reporter counts
+  # them (rspec/rspec#305), the examples here call the configured reporter's
+  # `increment_expectation_count`, which the formatter adds to the reporter
+  # of the coordinating process (or of the serial run).
+  it 'adds up the expectations its workers count, as a serial run does, for a reporter that counts them' do
+    write_file_formatted 'spec/support/counted_expectations.rb', "
+      class CountedExpectations
+        RSpec::Core::Formatters.register self, :start, :dump_summary
+
+        def initialize(output)
+          @output = output
+        end
+
+        def start(_notification)
+          counted = 0
+          reporter = RSpec.configuration.reporter
+          reporter.define_singleton_method(:increment_expectation_count) { counted += 1 }
+          reporter.define_singleton_method(:counted_expectations) { counted }
+        end
+
+        def dump_summary(_notification)
+          @output.puts \"Counted \#{RSpec.configuration.reporter.counted_expectations} expectations\"
+        end
+      end
+    "
+    4.times do |i|
+      write_file_formatted "spec/c#{i}_spec.rb", "
+        RSpec.describe('C#{i}') do
+          before(:context) { RSpec.configuration.reporter.increment_expectation_count }
+          it('counts twice') { 2.times { RSpec.configuration.reporter.increment_expectation_count } }
+          it('counts once') { RSpec.configuration.reporter.increment_expectation_count }
+        end
+      "
+    end
+    options = '--require ./spec/support/counted_expectations --format progress --format CountedExpectations'
+
+    run_rspec options
+    expect(last_cmd_stdout).to include("8 examples, 0 failures", "Counted 16 expectations")
+
+    run_rspec "#{options} --parallel=2"
+    expect(last_cmd_stdout).to include("8 examples, 0 failures", "Counted 16 expectations")
+    expect(last_cmd_exit_status).to eq(0)
+  end
+
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
     write_file_formatted 'spec/support/my_formatter.rb', "
       class MyAppError < StandardError; end
@@ -867,6 +911,53 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     end
   end
 
+  # As a worker deadlocked in a fork handler (in Ruby, or a library's) is:
+  # it never runs any of RSpec's code, and SIGTERM does not end it.
+  describe 'a worker stuck before it runs any of its code' do
+    before do
+      stub_const("RSpec::Core::Parallel::Coordinator::TERM_GRACE", 0.3)
+      stub_const("RSpec::Core::Parallel::Coordinator::KILL_GRACE", 0.3)
+      # Forked workers inherit this stub.
+      allow_any_instance_of(RSpec::Core::Parallel::Worker).to receive(:run).and_wrap_original do |original, *args|
+        if original.receiver.number == 2
+          trap('TERM', 'IGNORE')
+          sleep
+        end
+        original.call(*args)
+      end
+    end
+
+    def write_suite
+      write_file_formatted 'spec/stuck_at_fork_spec.rb', "
+        RSpec.configure { |c| c.parallel_shutdown_timeout = 0.5 }
+        RSpec.describe('S1') { it('passes') { } }
+        RSpec.describe('S2') { it('passes') { } }
+      "
+    end
+
+    def pids_in(output)
+      output.scan(/\(pid (\d+)\)/).flatten.map(&:to_i).uniq
+    end
+
+    it 'is terminated, then killed, once it misses its start deadline, and its group runs in another worker' do
+      write_suite
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      run_rspec "--parallel=2 --order defined spec/stuck_at_fork_spec.rb"
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
+      expect(last_cmd_stdout).to include(
+        "2 examples, 0 failures",
+        "never reported back after it was forked",
+        "still alive 0.3 seconds after SIGTERM; sending SIGKILL"
+      )
+      expect(last_cmd_exit_status).to eq(0)
+      pids = pids_in(last_cmd_stdout)
+      expect(pids.size).to eq(1)
+      expect { Process.kill(0, pids.first) }.to raise_error(Errno::ESRCH)
+    end
+  end
+
   it 'falls back to a serial run with a warning inside another parallel worker' do
     write_file_formatted 'spec/a_spec.rb', "
       RSpec.describe('A') { it('passes') { expect(RSpec.configuration.parallel_worker_number).to be_nil } }
@@ -949,10 +1040,23 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
 
     it 'terminates a worker still loading long after the coordinating process finished, and runs its groups elsewhere' do
       write_file_formatted 'spec/spec_helper.rb', "RSpec.configure { |c| c.parallel_shutdown_timeout = 1 }"
+      # Worker 1 stays busy until worker 2 is gone, however long this
+      # process's own loading (and so worker 2's deadline) took.
       3.times do |i|
         write_file_formatted "spec/s#{i}_spec.rb", "
-          sleep 600 if ENV['TEST_ENV_NUMBER'] == '2'
-          RSpec.describe('S#{i}') { it('keeps the other worker busy past the deadline') { sleep 0.7 } }
+          (File.write('loading.pid.tmp', Process.pid.to_s); File.rename('loading.pid.tmp', 'loading.pid'); sleep 600) if ENV['TEST_ENV_NUMBER'] == '2'
+          RSpec.describe('S#{i}') do
+            it('keeps the other worker busy past the deadline') do
+              $give_up ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
+              loading = lambda do
+                pid = File.exist?('loading.pid') && Integer(File.read('loading.pid'))
+                !pid || Process.kill(0, pid)
+              rescue Errno::ESRCH
+                false
+              end
+              sleep 0.05 while loading.call && Process.clock_gettime(Process::CLOCK_MONOTONIC) < $give_up
+            end
+          end
         "
       end
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)

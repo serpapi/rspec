@@ -115,16 +115,17 @@ module RSpec::Core::Parallel
 
       thread = Thread.new do
         Thread.current.report_on_exception = false
+        send_started(results, behaviour)
         case behaviour
         when :garbage        then stall_after { results.io.write("garbage\n") }
         when :partial_frame  then stall_after { results.io.write("999\nabc") }
         when :closes_results then stall_after { results.close }
         when :leaves_and_hangs then stall_after { leave_for_a_signal(jobs, results) }
-        when :never_loads    then sleep
+        when :never_loads, :never_starts, :starts_once_asked_to_quit then stall(behaviour, handle, results)
         when :dies_loading   then Thread.current.kill
         else
           report_loaded(results, behaviour) if handle.loading
-          send_unknown_ids(results) if behaviour == :unknown_ids
+          send_extra_frames(results, behaviour)
           run_fake_worker(handle.number, jobs, results, behaviour) { |status| exit_status = status }
         end
       ensure
@@ -134,6 +135,25 @@ module RSpec::Core::Parallel
       end
 
       @process.register(thread) { exit_status && FakeProcess::Status.new(exit_status, nil) }
+    end
+
+    # What a real worker sends first, which the fakes standing in for one send
+    # too -- and then go on as they would, even if nothing reads it any more
+    # (dismissed before their thread got going, say).
+    def send_started(results, behaviour)
+      fakes = [:garbage, :partial_frame, :closes_results, :leaves_and_hangs, :never_loads, :dies_loading]
+      results.send([:started]) if fakes.include?(behaviour)
+    rescue Errno::EPIPE, IOError
+      nil
+    end
+
+    # One that reports back only once it has been asked to stop early stalls then.
+    def stall(behaviour, handle, results)
+      if behaviour == :starts_once_asked_to_quit
+        sleep 0.01 until handle.quit_sent
+        results.send([:started])
+      end
+      sleep
     end
 
     def stall_after
@@ -167,6 +187,11 @@ module RSpec::Core::Parallel
       digest = digest.merge("./spec/a_spec.rb" => "a", "./spec/b_spec.rb" => "b") if behaviour == :loads_other_files
       failure = "An error occurred while loading ./spec/x_spec.rb. RuntimeError: boom" if behaviour == :fails_to_load
       results.send([:loaded, digest, failure])
+    end
+
+    def send_extra_frames(results, behaviour)
+      send_unknown_ids(results) if behaviour == :unknown_ids
+      results.send([:expectations, 3]) if behaviour == :counts_expectations
     end
 
     def send_unknown_ids(results)
@@ -502,6 +527,20 @@ module RSpec::Core::Parallel
     describe "a worker that is asked to stop early but does not" do
       before { config.parallel_shutdown_timeout = 0.5 }
 
+      it "is terminated after the shutdown timeout even when it reports back only after it was asked to stop" do
+        config.fail_fast = true
+        worker_behaviours[2] = :starts_once_asked_to_quit
+        groups = [failing_group("Fails"), passing_group("Held by the late worker")]
+        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+        run = Thread.new { coordinator(groups).run }
+
+        expect(run.join(10)).to be_truthy
+        expect(run.value).to eq(config.failure_exit_code)
+        expect(process.signals.map(&:first)).to eq(["TERM"])
+        expect(messages).to include("did not stop within 0.5 seconds of being asked to stop early")
+      end
+
       it "is terminated after the shutdown timeout so a cancelled run still ends" do
         config.fail_fast = true
         worker_behaviours[2] = :partial_frame
@@ -772,6 +811,32 @@ module RSpec::Core::Parallel
       expect(messages).to include("2 examples, 0 failures")
     end
 
+    it "adds the expectations a worker counted to its reporter's count, when that keeps one" do
+      worker_behaviours[1] = :counts_expectations
+      counted = 0
+      config.reporter.define_singleton_method(:increment_expectation_count) { counted += 1 }
+
+      exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+      # Before this spec's own expectations, which an rspec-expectations that counts them adds to.
+      counted_by_the_run = counted
+
+      expect(exit_code).to eq(0)
+      expect(counted_by_the_run).to eq(3)
+      expect(messages).not_to include("unexpected")
+    end
+
+    it "ignores the expectations a worker counted when its reporter keeps no count" do
+      worker_behaviours[1] = :counts_expectations
+      allow(config.reporter).to receive(:respond_to?).and_call_original
+      allow(config.reporter).to receive(:respond_to?).with(:increment_expectation_count).and_return(false)
+
+      exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+
+      expect(exit_code).to eq(0)
+      expect(messages).not_to include("unexpected")
+      expect(messages).to include("2 examples, 0 failures")
+    end
+
     it "reports the groups that never ran when no worker remains" do
       crashing = RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }
       groups = [crashing, RSpec.describe("Also crashing") { it("dies") { Thread.current.kill } }, passing_group("C"), passing_group("D")]
@@ -899,11 +964,59 @@ module RSpec::Core::Parallel
       expect(groups.drop(1).flat_map(&:examples).map { |e| e.execution_result.status }).to all(eq(:passed))
     end
 
+    describe "a worker that never reports back after it was forked" do
+      it "is terminated once it misses its start deadline, and the group it was given runs in another worker" do
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[2] = :never_starts
+
+        exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+
+        expect(exit_code).to eq(0)
+        expect(messages).to include("2 examples, 0 failures")
+        expect(messages.scan("never reported back after it was forked").size).to eq(1)
+        expect(messages).to include("the group it was given runs in another worker")
+        expect(process.signals.map(&:first)).to eq(["TERM"])
+      end
+
+      it "says the group it was given did not run when the run stops early" do
+        config.parallel_shutdown_timeout = 0.05
+        config.fail_fast = true
+        worker_behaviours[2] = :never_starts
+        groups = [failing_group("Fails"), passing_group("Held by the stuck worker")]
+        config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+        exit_code = coordinator(groups).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(messages).to include("never reported back after it was forked", "the group it was given did not run")
+        expect(messages).to include("1 example, 1 failure")
+      end
+
+      it "is terminated once it misses its start deadline, and what no worker ran is reported" do
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[1] = worker_behaviours[2] = :never_starts
+
+        exit_code = coordinator([passing_group("A"), passing_group("B")]).run
+
+        expect(exit_code).to eq(config.failure_exit_code)
+        expect(messages.scan("never reported back after it was forked").size).to eq(2)
+        expect(messages).to include("did not run because no worker remained to run them")
+        expect(process.signals.map(&:first)).to eq(%w[TERM TERM])
+      end
+    end
+
     it "requeues a group when its worker cannot be reached and lets another worker run it" do
       config.parallel_shutdown_timeout = 5
+      # Its pipe closes as the first job is written to it: the write fails,
+      # and the worker sees the end of it, as when the coordinator is gone.
       spawn_with_closed_jobs = lambda do |handle, handles|
         pid = spawn(handle, handles)
-        handle.jobs.io.close_write if handle.number == 2
+        if handle.number == 2
+          handle.jobs.define_singleton_method(:send) do |message|
+            io.close_write
+            super(message)
+          end
+        end
         pid
       end
       groups = [passing_group("A"), passing_group("B"), passing_group("C")]

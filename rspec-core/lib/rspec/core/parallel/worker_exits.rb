@@ -39,6 +39,8 @@ module RSpec
                   "sent SIGTERM. Raise `config.parallel_shutdown_timeout` if they legitimately need longer.")
             abort_unit(worker)
             worker.results.close
+          elsif worker.starting
+            never_started(worker)
           elsif worker.state == :stopping
             error("#{worker.description} did not exit within #{timeout} of finishing its last example group (its " \
                   "`after(:suite)` hooks or `at_exit` handlers may be stuck), so it was sent SIGTERM. Raise " \
@@ -105,6 +107,31 @@ module RSpec
 
           @exit_status = exit_status
           report "#{worker.description}: then #{cause}, so the run exits with status #{exit_status}." unless @exit_spoiled
+        end
+
+        # Stuck between `fork` and RSpec's code, as a fork-time deadlock (in
+        # Ruby, or a library's fork handler) leaves a process: it has run
+        # nothing, so the group it was given goes to another worker as is.
+        def never_started(worker)
+          worker.loading = false
+          index = worker.current_unit
+          requeue = index && accepting_work?
+          report "#{worker.description} never reported back after it was forked (stuck before running any of " \
+                 "RSpec's code, as a deadlock in a fork handler would leave it), so it was sent SIGTERM. It ran " \
+                 "nothing#{never_started_outcome(index, requeue)}."
+          if requeue
+            @unit_states[index] = :pending
+            @queue.unshift(index)
+            worker.current_unit = nil
+          end
+          abort_unit(worker)
+          worker.results.close
+        end
+
+        def never_started_outcome(index, requeue)
+          return "" unless index
+
+          requeue ? "; the group it was given runs in another worker" : "; the group it was given did not run"
         end
 
         # The worker can no longer be relied on, and nothing it sends from now

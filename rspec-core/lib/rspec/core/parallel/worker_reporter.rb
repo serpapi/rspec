@@ -25,6 +25,25 @@ module RSpec
           @jobs = jobs
           @world = world
           @group_started_at = nil
+          @unforwarded_expectations = 0
+        end
+
+        # @private
+        # Called for every expectation by an rspec-expectations that counts
+        # them; the count reaches the coordinator through
+        # {#forward_expectation_count}.
+        def increment_expectation_count
+          @unforwarded_expectations += 1
+        end
+
+        # @private
+        # Sends what was counted since the last call, if anything: the
+        # coordinator adds it to its own reporter's count, if that keeps one.
+        def forward_expectation_count
+          return if @unforwarded_expectations.zero?
+
+          @results.send([:expectations, @unforwarded_expectations])
+          @unforwarded_expectations = 0
         end
 
         # @private

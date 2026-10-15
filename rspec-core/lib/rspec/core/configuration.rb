@@ -268,7 +268,9 @@ module RSpec
       # last example group -- that is, to run its `after(:suite)` hooks and
       # `at_exit` handlers (default: 30). A worker that takes longer dumps the
       # backtraces of all its threads to stderr and is aborted, and the run
-      # exits with {#error_exit_code}.
+      # exits with {#error_exit_code}. It is also how long a worker forked
+      # after loading has to report back: one stuck in `fork` (a deadlock in
+      # a fork handler) is terminated, and its group runs in another worker.
       # @return [Numeric]
       add_setting :parallel_shutdown_timeout
 
