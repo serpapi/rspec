@@ -40,6 +40,13 @@ jobs:
       - run: ../script/bundle
       - name: whole suite, serial, bundle exec
         run: bundle exec rspec spec --backtrace --format progress
+      - name: bisect specs with $LOAD_PATH joined by File::PATH_SEPARATOR (hypothesis test, not committed)
+        if: always()
+        run: |
+          grep -n "join(':')" lib/rspec/core/bisect/shell_command.rb
+          sed -i "s/join(':')/join(File::PATH_SEPARATOR)/" lib/rspec/core/bisect/shell_command.rb
+          grep -n "PATH_SEPARATOR" lib/rspec/core/bisect/shell_command.rb
+          bundle exec rspec spec/integration/bisect_spec.rb spec/integration/bisect_runners_spec.rb --format progress; echo "exit status $?"
       - name: --parallel=2 without fork
         if: always() && matrix.ref == '559e96f1672d9d6cc00dd680f52e5a13adbcd565'
         run: |
