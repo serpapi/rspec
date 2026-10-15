@@ -1,0 +1,47 @@
+name: Windows probe (rspec-core)
+on:
+  push:
+    branches:
+      - 'ilyazub-windows-probe'
+
+permissions:
+  contents: read
+
+env:
+  DIFF_LCS_VERSION: "> 1.4.3"
+  RSPEC_CI: true
+  RSPEC_VERSION: "= 4.0.0.pre"
+
+jobs:
+  rspec-core:
+    name: ${{ matrix.label }} on Windows, Ruby 3.4
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: base df877b73ab
+            ref: df877b73ab2a01bc7e3b5a39e7e252e8d9bb67a3
+          - label: head 559e96f16
+            ref: 559e96f1672d9d6cc00dd680f52e5a13adbcd565
+    defaults:
+      run:
+        shell: bash
+        working-directory: rspec-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ matrix.ref }}
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.4'
+      - run: choco install ansicon
+      - run: ../script/bundle
+      - name: whole suite, serial
+        run: ruby ../bin/rspec spec --backtrace --format progress
+      - name: --parallel=2 without fork
+        if: matrix.ref == '559e96f1672d9d6cc00dd680f52e5a13adbcd565'
+        run: |
+          ruby -e 'puts "Process.respond_to?(:fork) => #{Process.respond_to?(:fork)}"'
+          ruby ../bin/rspec spec/rspec/core/parallel_spec.rb spec/rspec/core/parallel --parallel=2 --format progress; echo "exit status $?"
