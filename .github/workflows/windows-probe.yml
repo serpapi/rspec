@@ -22,8 +22,8 @@ jobs:
         include:
           - label: base df877b73ab
             ref: df877b73ab2a01bc7e3b5a39e7e252e8d9bb67a3
-          - label: head 559e96f16
-            ref: 559e96f1672d9d6cc00dd680f52e5a13adbcd565
+          - label: head 7c924a306
+            ref: 7c924a306b18171aefc15ab6064edc0931e4e92f
     defaults:
       run:
         shell: bash
@@ -48,7 +48,7 @@ jobs:
           grep -n "PATH_SEPARATOR" lib/rspec/core/bisect/shell_command.rb
           bundle exec rspec spec/integration/bisect_spec.rb spec/integration/bisect_runners_spec.rb --format progress; echo "exit status $?"
       - name: --parallel=2 without fork
-        if: always() && matrix.ref == '559e96f1672d9d6cc00dd680f52e5a13adbcd565'
+        if: always() && matrix.ref == '7c924a306b18171aefc15ab6064edc0931e4e92f'
         run: |
           ruby -e 'puts "Process.respond_to?(:fork) => #{Process.respond_to?(:fork)}"'
           bundle exec rspec spec/rspec/core/parallel_spec.rb spec/rspec/core/parallel spec/integration/parallel_spec.rb --parallel=2 --format progress; echo "exit status $?"
