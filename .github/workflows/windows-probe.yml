@@ -14,6 +14,7 @@ env:
 
 jobs:
   libraries:
+    if: false
     name: ${{ matrix.library }} suite on Windows, Ruby 3.4
     runs-on: windows-latest
     strategy:

@@ -84,9 +84,15 @@ CHILD = <<'RUBY'
   results.binmode
   results.sync = true
   STDIN.reopen(File::NULL)
-  STDOUT.reopen(ENV.fetch('PROBE_OUT'), 'ab')
+  out_file = File.open(ENV.fetch('PROBE_OUT'), 'ab')
+  err_file = File.open(ENV.fetch('PROBE_ERR'), 'ab')
+  STDOUT.reopen(out_file)
+  STDERR.reopen(err_file)
+  out_file.close
+  err_file.close
+  STDOUT.binmode
+  STDERR.binmode
   STDOUT.sync = true
-  STDERR.reopen(ENV.fetch('PROBE_ERR'), 'ab')
   STDERR.sync = true
   results.write(frame([:started, Process.pid, Process.ppid, ENV['TEST_ENV_NUMBER']]))
   loop do
@@ -100,7 +106,7 @@ CHILD = <<'RUBY'
       puts 'out-line'
       $stderr.puts 'err-line'
       print "no-newline"
-      system(RbConfig.ruby, '-e', 'puts "grandchild"; $stdout.flush')
+      system('echo grandchild')
       results.write(frame([:printed, File.size(ENV['PROBE_OUT']), File.size(ENV['PROBE_ERR'])]))
     when :sleep
       results.write(frame([:sleeping]))
@@ -112,15 +118,14 @@ CHILD = <<'RUBY'
 RUBY
 
 MIDDLE = <<'RUBY'
-  child = Process.spawn({ 'PROBE_WATCH' => ENV.fetch('PROBE_WATCH') },
+  child = Process.spawn({ 'PROBE_WATCH' => ENV.fetch('PROBE_WATCH'), 'PROBE_PARENT' => Process.pid.to_s },
                         RbConfig.ruby, '-e', ENV.fetch('PROBE_CHILD'), :in => File::NULL, :out => File::NULL)
   File.write(ENV.fetch('PROBE_CHILD_PID'), child.to_s)
-  sleep 1
   exit!(0)
 RUBY
 
 WATCHER = <<'RUBY'
-  parent = Process.ppid
+  parent = Integer(ENV.fetch('PROBE_PARENT'))
   deadline = Time.now + 6
   changed = gone = false
   until Time.now > deadline
@@ -206,9 +211,17 @@ Dir.mktmpdir('spawn-probe') do |dir|
 
   send_job(a, :print)
   printed = a[:results].wait_for(30).first
-  out = File.binread(a[:out])
-  err = File.binread(a[:err])
-  check 'child stdout reaches the capture file in order', out == "out-line\nno-newlinegrandchild\n" || out == "out-line\r\nno-newlinegrandchild\r\n", out.inspect
+  out = begin
+    File.open(a[:out], 'rb', &:read)
+  rescue StandardError => e
+    e.class.name
+  end
+  err = begin
+    File.open(a[:err], 'rb', &:read)
+  rescue StandardError => e
+    e.class.name
+  end
+  check 'child stdout reaches the capture file in order, readable while the child runs', out.start_with?("out-line") && out =~ /\Aout-line\r?\nno-newlinegrandchild\s*\z/, out.inspect
   check 'child stderr reaches the capture file', err.include?('err-line'), err.inspect
   check 'reported sizes match the files', printed && printed[1] == out.bytesize && printed[2] == err.bytesize, printed.inspect
   note 'newlines in capture', out.include?("\r\n") ? 'CRLF' : 'LF'
@@ -291,6 +304,14 @@ Dir.mktmpdir('spawn-probe') do |dir|
     rescue StandardError
       nil
     end
+    reap(child[:pid], 10)
+  end
+  sleep 1
+  begin
+    Dir.children(dir).each { |name| File.delete(File.join(dir, name)) }
+    check 'capture files can be deleted once the children are gone', true
+  rescue StandardError => e
+    check 'capture files can be deleted once the children are gone', false, e.class.name
   end
 end
 
