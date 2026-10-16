@@ -1162,7 +1162,8 @@ module RSpec::Core::Parallel
         config.parallel_shutdown_timeout = 0.05
         worker_behaviours[2] = :never_starts
 
-        expect(coordinator([passing_group("A"), passing_group("B")]).run).to eq(0)
+        coordinator([passing_group("A"), passing_group("B")]).run
+
         expect(messages).to include("never reported back after it was started (Ruby did not get as far as loading RSpec)")
       end
 

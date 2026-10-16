@@ -1409,7 +1409,8 @@ RSpec.describe 'Parallel execution without fork (spawned workers)', :slow do
 
     status, stdout, stderr = rspec_process(*without_fork, '--require', './spec/spec_helper', '--parallel=2')
 
-    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 30
+    # Its `after(:suite)` hooks never return: that it ends at all is the bound (JRuby's startup is most of the time).
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 55
     expect(stdout).to include("6 examples, 1 failure")
     expect(stderr.scan("did not exit within 1 second of finishing its last example group").size).to eq(2)
     expect(status.exitstatus).to eq(1)
