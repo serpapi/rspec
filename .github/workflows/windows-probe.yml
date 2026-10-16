@@ -13,32 +13,8 @@ env:
   RSPEC_VERSION: "= 4.0.0.pre"
 
 jobs:
-  libraries:
-    if: false
-    name: ${{ matrix.library }} suite on Windows, Ruby 3.4
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        library: [rspec-core, rspec-expectations, rspec-mocks, rspec-support]
-    defaults:
-      run:
-        shell: bash
-        working-directory: ${{ matrix.library }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
-        with:
-          ruby-version: '3.4'
-      - run: choco install ansicon
-      - run: ../script/bundle
-      - name: whole suite, serial, bundle exec
-        run: bundle exec rspec --backtrace --format progress
-
-  spawn-probe:
-    name: spawn probe ${{ matrix.os }} ${{ matrix.ruby }}
+  spawned-workers:
+    name: ${{ matrix.os }} ${{ matrix.ruby }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -46,11 +22,12 @@ jobs:
         include:
           - { os: windows-latest, ruby: '3.4' }
           - { os: windows-latest, ruby: '3.0' }
-          - { os: ubuntu-latest, ruby: jruby-9.4 }
           - { os: ubuntu-latest, ruby: jruby-10.0 }
-          - { os: ubuntu-latest, ruby: jruby-10.1 }
-          - { os: ubuntu-latest, ruby: truffleruby }
-          - { os: macos-latest, ruby: jruby-10.0 }
+          - { os: ubuntu-latest, ruby: jruby-9.4 }
+    defaults:
+      run:
+        shell: bash
+        working-directory: rspec-core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,4 +35,14 @@ jobs:
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: ${{ matrix.ruby }}
-      - run: ruby .github/probe/spawn_probe.rb
+      - run: choco install ansicon
+        if: runner.os == 'Windows'
+      - run: ../script/bundle
+      - name: whole suite, serial (includes the spawned-worker integration specs)
+        run: bundle exec rspec --backtrace --format progress
+      - name: whole suite with --parallel=4 (spawned workers)
+        if: always()
+        run: timeout 900 bundle exec rspec --parallel=4 --format progress; echo "exit status $?"
+      - name: spawned-worker integration specs, 5 times
+        if: always()
+        run: for i in 1 2 3 4 5; do bundle exec rspec spec/integration/parallel_spec.rb -e "spawned workers" --format progress | tail -3; done
