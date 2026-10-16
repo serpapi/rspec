@@ -13,8 +13,37 @@ module RSpec::Core
       Array.new(count) { |i| RSpec.describe("G#{i}") { it("e") {} } }
     end
 
+    describe "where there is no `fork`" do
+      before do
+        allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(false)
+        allow(Runner).to receive(:command_line).and_return(["exe/rspec", []])
+        allow(config).to receive(:files_to_run).and_return(%w[./spec/a_spec.rb ./spec/b_spec.rb ./spec/c_spec.rb])
+      end
+
+      it "starts the workers before loading, as new processes that load the spec files, whatever `parallel_preload` says" do
+        config.parallel_workers = 2
+        expect(Parallel::Coordinator).to receive(:new).with(runner, 2).and_return(started)
+
+        plan.before_loading
+
+        all = groups(3)
+        expect(plan.coordinator_for(all)).to eq(started)
+        expect(started).to have_received(:assign).with(all, anything)
+      end
+
+      it "warns, and runs serially, when the worker count is set while the spec files load" do
+        plan.before_loading
+        config.parallel_workers = 2
+        expect(RSpec).to receive(:warning).with(a_string_including("`config.parallel_workers` was set while the spec files"),
+                                                :call_site => nil)
+
+        expect(plan.coordinator_for(groups(3))).to be_nil
+      end
+    end
+
     describe "by default, the spec files being loaded before the workers are forked" do
       it "forks nothing before loading, then leaves the decision to Parallel.coordinator_for" do
+        allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(true)
         config.parallel_workers = 2
         expect(Parallel::Coordinator).not_to receive(:new)
         plan.before_loading
@@ -94,7 +123,8 @@ module RSpec::Core
       it "runs serially, without forking or warning again, when a parallel run is not possible" do
         config.parallel_workers = 2
         allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(false)
-        expect(RSpec).to receive(:warning).once.with(a_string_including("needs `fork`"), :call_site => nil)
+        allow(Runner).to receive(:command_line).and_return(nil)
+        expect(RSpec).to receive(:warning).once.with(a_string_including("without `fork`"), :call_site => nil)
         expect(Parallel::Coordinator).not_to receive(:new)
 
         plan.before_loading

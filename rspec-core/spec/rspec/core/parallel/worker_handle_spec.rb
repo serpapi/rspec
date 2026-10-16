@@ -10,6 +10,39 @@ module RSpec::Core::Parallel
       expect(first.map(&:closed?)).to eq([true, true])
     end
 
+    describe "#signal" do
+      let(:handle) { WorkerHandle.new(1).tap { |h| h.pid = 4242 } }
+      let(:sent) { [] }
+
+      after { handle.close_all }
+
+      it "sends SIGKILL where SIGTERM cannot be sent (Windows)" do
+        process = double(:process)
+        allow(process).to receive(:kill) do |name, pid|
+          raise Errno::EINVAL if name == 'TERM'
+
+          sent << [name, pid]
+        end
+
+        handle.signal(process, 'TERM', :term, 1.0)
+
+        expect(sent).to eq([['KILL', 4242]])
+        expect(handle.escalation).to eq(:term)
+      end
+    end
+
+    describe "#spawn_worker" do
+      it "starts the command with its jobs on standard input and its results on standard output" do
+        handle = WorkerHandle.new(2)
+        process = double(:process)
+        expect(process).to receive(:spawn).with({ "A" => "1" }, "ruby", "rspec", :in => handle.child_jobs.io,
+                                                :out => handle.child_results.io).and_return(4242)
+
+        expect(handle.spawn_worker(process, %w[ruby rspec], "A" => "1")).to eq(4242)
+        handle.close_all
+      end
+    end
+
     describe "the deadline for its first frame" do
       let(:handle) { WorkerHandle.new(1) }
 

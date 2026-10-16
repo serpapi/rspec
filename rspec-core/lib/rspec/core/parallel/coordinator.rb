@@ -3,9 +3,11 @@ RSpec::Support.require_rspec_core "parallel/channel"
 RSpec::Support.require_rspec_core "parallel/remote_exception"
 RSpec::Support.require_rspec_core "parallel/worker_reporter"
 RSpec::Support.require_rspec_core "parallel/worker"
+RSpec::Support.require_rspec_core "parallel/spawned_worker"
 RSpec::Support.require_rspec_core "parallel/sequencer"
 RSpec::Support.require_rspec_core "parallel/results"
 RSpec::Support.require_rspec_core "parallel/suite_index"
+RSpec::Support.require_rspec_core "parallel/worker_output"
 RSpec::Support.require_rspec_core "parallel/worker_handle"
 RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
 RSpec::Support.require_rspec_core "parallel/worker_exits"
@@ -45,7 +47,7 @@ module RSpec
           @world = runner.world
           @worker_count = worker_count
           @process = options.fetch(:process) { Process }
-          @spawn = options.fetch(:spawn) { method(:fork_worker) }
+          @spawn = options.fetch(:spawn) { method(Parallel.spawning? ? :spawn_worker : :fork_worker) }
           @tick = options.fetch(:tick, TICK)
           @term_grace = options.fetch(:term_grace, TERM_GRACE)
           @kill_grace = options.fetch(:kill_grace, KILL_GRACE)
@@ -59,6 +61,8 @@ module RSpec
           @reap_due = true
           @next_reap_at = 0.0
           @last_turn_at = nil
+          @output_dir = nil
+          @boot_allowance = 0.0
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -80,7 +84,7 @@ module RSpec
           return run_serially if @workers.empty?
 
           passed = reporter.report(@world.example_count(@example_groups)) do
-            @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
+            @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result), :output => WorkerOutput.method(:write))
 
             begin
               @last_turn_at = now
@@ -107,6 +111,7 @@ module RSpec
         ensure
           terminate_remaining_workers
           Parallel.restore_signals(@signal_handlers)
+          WorkerOutput.remove_directory(@output_dir)
         end
 
       private
@@ -206,6 +211,7 @@ module RSpec
           when :exiting             then exiting(worker, *rest)
           when :loaded              then loaded(worker, *rest)
           when :expectations        then expectations(*rest)
+          when :output              then output(worker, *rest)
           when :started             then nil
           else report "#{worker.description} sent an unexpected #{kind.inspect} frame, which was ignored."
           end
@@ -248,7 +254,24 @@ module RSpec
           index.with_example(example_id) do |example|
             worker.current_example = nil
             record_result(example, payload)
+            warn_unsent_metadata(worker, payload[:metadata])
             @sequencer.example_finished(worker.number, example, bytes)
+          end
+        end
+
+        # Once per metadata key.
+        def warn_unsent_metadata(worker, changes)
+          unsent = changes && changes[:unsent]
+          return unless unsent
+
+          @unsent_metadata ||= {}
+          unsent.each do |key, class_name|
+            next if @unsent_metadata.key?(key)
+
+            @unsent_metadata[key] = true
+            RSpec.warning "#{worker.description} set example metadata #{key} to a #{class_name}, which cannot be " \
+                          "marshaled to reach the formatters, so they see the value it had before the example ran. " \
+                          "Later values of #{key} that cannot be marshaled are not reported", :call_site => nil
           end
         end
 
@@ -372,6 +395,7 @@ module RSpec
             next unless pid
 
             receive_from(worker)
+            drain_output(worker)
             worker.exit_status = status
             judge_exit(worker, status)
             worker.state = :exited
@@ -398,6 +422,7 @@ module RSpec
             worker.signal(@process, 'KILL', :kill, now + @kill_grace)
           when :kill
             report "#{worker.description} is still alive #{Parallel.seconds(@kill_grace)} after SIGKILL; giving up on it."
+            drain_output(worker)
             abort_unit(worker)
             worker.state = :abandoned
           end

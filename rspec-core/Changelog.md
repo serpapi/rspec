@@ -8,10 +8,11 @@ Enhancements:
   Formatters run in the coordinating process only and receive one coherent stream of
   notifications with real `Example` objects -- results, timing, pending details,
   exceptions rebuilt from their class name, message, backtrace and cause chain, messages,
-  deprecations and marshalable custom notifications (of the metadata changed while an
-  example runs only its description, as a one-liner generates it, `:extra_failure_lines`,
-  `:pending` and `:skip` are forwarded) -- so existing formatters keep working and the run
-  has one seed, one summary, one profile and one `.rspec_status` file. Listeners
+  deprecations, marshalable custom notifications and the metadata an example set, changed
+  or deleted -- so existing formatters keep working and the run has one seed, one summary,
+  one profile and one `.rspec_status` file. What workers print (also from processes they
+  start, crash reports and `at_exit` handlers) appears with the example group that printed
+  it, as in a serial run. Listeners
   registered inside a worker, e.g. in a `before(:suite)` hook, still see that worker's
   example notifications. Workers run the suite hooks once each, expose
   `RSpec::Core::Configuration#parallel_worker_number` and set `TEST_ENV_NUMBER` the way
@@ -28,13 +29,20 @@ Enhancements:
   (`RSpec::Core::Configuration#parallel_preload`) the workers are forked before the spec
   files are loaded and each loads them itself, so nothing the spec files do while loading
   is shared with the workers; a worker that does not load the examples the coordinating
-  process has is not used. Where `fork` is unavailable the run is serial with a warning.
+  process has is not used. Where Ruby has no `fork` (Windows, JRuby, TruffleRuby) the
+  workers are new processes running the same `rspec` command with the run's seed, and load
+  the spec files themselves.
   `--bisect` runs serially, and the reproduction command it prints now ends with
   `--no-parallel`.
   (Illia Zub)
 * Load and filter large suites faster by no longer looking up the working directory once per
   example and example group, which took seconds on a suite of 150,000 examples, and more when
   several processes did it at once. (Illia Zub)
+
+Bug Fixes:
+
+* Fix `--bisect` on Windows, which passed its load path to the processes it starts joined
+  with `:` instead of `;`. (Illia Zub)
 
 # 4.0.0.beta1 / 2026-02-18
 

@@ -1,5 +1,9 @@
+require 'fileutils'
+require 'tmpdir'
 require 'rspec/core/parallel/coordinator'
 
+# These specs stand in for the process's own streams, which a worker moves.
+# rubocop:disable-next Style/GlobalStdStream
 module RSpec::Core::Parallel
   RSpec.describe Worker do
     let(:jobs) { Channel.pipe }
@@ -67,6 +71,39 @@ module RSpec::Core::Parallel
         expect(instance.watch_coordinator.join(5)).to be_truthy
         expect(exits).to eq([[:exit_now, 1]])
         expect(stderr.string).to include("worker 2 (pid #{Process.pid}) is exiting because the coordinating process (pid 100) is gone")
+      end
+
+      it "removes the directory of its output files, which the coordinator would have removed" do
+        stub_const("RSpec::Core::Parallel::Worker::COORDINATOR_POLL", 0.01)
+        dir = Dir.mktmpdir
+        parents = [100, 1]
+        instance = Worker.new(2, groups, jobs.first, results.last,
+                              :stderr => stderr, :output => WorkerOutput.new(dir, 2).paths,
+                              :exit_now => lambda { |status| exits << [:exit_now, status] },
+                              :ppid => lambda { parents.size > 1 ? parents.shift : parents.first })
+
+        expect(instance.watch_coordinator.join(5)).to be_truthy
+        expect(File.exist?(dir)).to be false
+      end
+
+      it "exits when the coordinator's pid no longer names a process, its parent unchanged (Windows)" do
+        stub_const("RSpec::Core::Parallel::Worker::COORDINATOR_POLL", 0.01)
+        answers = [true, true, false]
+        instance = Worker.new(2, groups, jobs.first, results.last,
+                              :stderr => stderr, :coordinator => 100, :ppid => lambda { 100 },
+                              :alive => lambda { |pid| pid == 100 && answers.shift },
+                              :exit_now => lambda { |status| exits << [:exit_now, status] })
+
+        expect(instance.watch_coordinator.join(5)).to be_truthy
+        expect(exits).to eq([[:exit_now, 1]])
+        expect(stderr.string).to include("the coordinating process (pid 100) is gone")
+      end
+
+      it "tells a live process from one that is gone" do
+        expect(worker.process_alive?(Process.pid)).to be true
+        gone = Process.spawn(RbConfig.ruby, '-e', 'exit')
+        Process.wait(gone)
+        expect(worker.process_alive?(gone)).to be false
       end
 
       it "still exits when it cannot say why (its stderr is gone too)" do
@@ -184,6 +221,45 @@ module RSpec::Core::Parallel
           [:exiting, nil, nil],
           [:expectations, 1]
         ])
+      end
+
+      context "with output files" do
+        let(:dir) { Dir.mktmpdir }
+        let(:stdout_stand_in) { File.open(File.join(dir, 'stdout'), 'w') }
+        let(:stderr_stand_in) { File.open(File.join(dir, 'stderr'), 'w') }
+
+        before do
+          stub_const('STDOUT', stdout_stand_in)
+          stub_const('STDERR', stderr_stand_in)
+        end
+
+        after do
+          [stdout_stand_in, stderr_stand_in].each(&:close)
+          FileUtils.remove_entry(dir)
+        end
+
+        it "moves its standard output and error into them and says how far they reach before the next frame" do
+          output = WorkerOutput.new(dir, 2)
+          groups.first.example("prints") { STDOUT.write("printed") }
+          jobs.last.send([:run, 0, groups[0].id])
+          jobs.last.send([:stop])
+
+          worker(2, :output => output.paths).run
+
+          announced = frames.select { |f| f.first == :output }
+          expect(announced).to eq([[:output, { :out => 7, :err => 0 }]])
+          expect(File.read(output.paths[:out])).to eq("printed")
+          output.close
+        end
+
+        it "writes where the run does when it cannot open them" do
+          missing = { :out => File.join(dir, 'gone', 'out'), :err => File.join(dir, 'gone', 'err') }
+          jobs.last.send([:stop])
+
+          worker(2, :output => missing).run
+
+          expect(frames).to eq([[:started]])
+        end
       end
 
       it "exits at once, without running suite hooks or at_exit handlers, when its first job is not a group to run" do

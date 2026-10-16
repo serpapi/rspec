@@ -23,6 +23,7 @@ module RSpec
           payload = @payloads.delete(example)
           return unless payload
 
+          apply_metadata(example.metadata, payload[:metadata])
           example.assign_execution_result(
             payload.merge(
               :started_at        => Parallel.time_from_wire(payload[:started_at]),
@@ -31,6 +32,15 @@ module RSpec
               :pending_exception => RemoteException.rebuild(payload[:pending_exception])
             )
           )
+        end
+
+        # What the example's run in a worker did to its metadata, done to the
+        # coordinator's copy before formatters are told about it.
+        def apply_metadata(metadata, changes)
+          return unless changes
+
+          changes.fetch(:set, {}).each { |key, value| metadata[key] = value }
+          changes.fetch(:deleted, []).each { |key| metadata.delete(key) }
         end
 
         def apply_all

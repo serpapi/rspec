@@ -35,19 +35,29 @@ module RSpec
             lambda { |signal, command=nil, &handler| command ? trap(signal, command) : trap(signal, &handler) }
           end
           @ppid = options.fetch(:ppid) { Process.method(:ppid) }
+          @alive = options.fetch(:alive) { method(:process_alive?) }
+          @coordinator = options[:coordinator]
+          @loading = options[:loading]
           @watch_coordinator = options.fetch(:watch_coordinator, true)
           @signal_handlers = options.fetch(:signal_handlers, {})
+          @output = options[:output]
         end
 
         # @return [String] the `TEST_ENV_NUMBER` value for this worker, following
         #   the convention established by parallel_tests: `""` for the first
         #   worker, then `"2"`, `"3"`, ...
         def test_env_number
-          @number == 1 ? "" : @number.to_s
+          self.class.test_env_number(@number)
+        end
+
+        # @private
+        def self.test_env_number(number)
+          number == 1 ? "" : number.to_s
         end
 
         # Never returns: ends the process when the coordinator has no more work.
         def run
+          capture_output
           # First, so the coordinator knows it got past `fork`.
           @results.send([:started])
           watch_coordinator if @watch_coordinator
@@ -61,25 +71,49 @@ module RSpec
           @exit_now.call(1)
         end
 
+        # @private
+        def capture_output
+          return if @captured || !@output
+
+          @captured = true
+          # For when there is no coordinator left to show the files.
+          @direct_stderr = STDERR.dup # rubocop:disable Style/GlobalStdStream
+          @results = WorkerOutput::Capture.new(@output, @results)
+        rescue SystemCallError, IOError
+          nil # it writes where the run does
+        end
+
         # A worker notices that the coordinator is gone when it next reports
         # to it -- which a worker stuck in a long example does not do. Its
-        # parent changes when the coordinator dies, so it does not outlive the
-        # coordinator by more than {COORDINATOR_POLL} seconds.
+        # parent changes when the coordinator dies, or (on Windows, where it
+        # does not) the coordinator's pid stops naming a process, so it does
+        # not outlive the coordinator by more than {COORDINATOR_POLL} seconds.
         # @private
         def watch_coordinator
-          coordinator = @ppid.call
+          coordinator = @coordinator || @ppid.call
           thread = Thread.new do
-            sleep COORDINATOR_POLL while @ppid.call == coordinator
+            sleep COORDINATOR_POLL while @ppid.call == coordinator && @alive.call(coordinator)
+            stderr = @stderr || @direct_stderr || $stderr
             begin
-              (@stderr || $stderr).puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) is exiting because the " \
-                                        "coordinating process (pid #{coordinator}) is gone."
+              stderr.puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) is exiting because the " \
+                          "coordinating process (pid #{coordinator}) is gone."
             rescue IOError, SystemCallError
               nil
             end
+            # The coordinator would have removed them.
+            WorkerOutput.remove_directory(File.dirname(@output[:out])) if @output
             @exit_now.call(1)
           end
           thread.report_on_exception = false
           thread
+        end
+
+        # @private
+        def process_alive?(pid)
+          Process.kill(0, pid)
+          true
+        rescue Errno::ESRCH, Errno::EPERM
+          false
         end
 
         # @private
@@ -119,7 +153,8 @@ module RSpec
         # @private
         def load_spec_files
           forwarding = @configuration.reporter
-          @configuration.reporter = loading = LoadReporter.new(@configuration)
+          # A spawned worker's also saw its `--require`d files load.
+          @configuration.reporter = loading = @loading || LoadReporter.new(@configuration)
           @configuration.load_spec_files
           @configuration.reporter = forwarding
           @groups_by_id = @world.example_groups.to_h { |group| [group.id, group] }

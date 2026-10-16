@@ -191,6 +191,77 @@ module RSpec::Core::Parallel
       expect(payload[:extra_failure_lines]).to eq(["Ref: added in the worker"])
     end
 
+    it "forwards the metadata an example set, changed in place or deleted, and nothing for one that changed none" do
+      group = RSpec.describe("G", :kept => "k", :gone => true) do
+        it("changes", :tags => ["a"], :same => "s") do |ex|
+          ex.metadata[:added] = { :path => "shot.png" }
+          ex.metadata[:tags] << "b"
+          ex.metadata.store(:same, ex.metadata[:same])
+          ex.metadata.delete(:gone)
+        end
+        it("changes nothing") {}
+      end
+      group.run(reporter)
+
+      payloads = frames.select { |f| f.first == :example_finished }.to_h { |f| [f.last[:description], f.last[:metadata]] }
+      changed, unchanged = payloads.values_at("changes", "changes nothing")
+      expect(changed).to eq(:set => { :added => { :path => "shot.png" }, :tags => %w[a b] }, :deleted => [:gone])
+      expect(unchanged).to be_nil
+    end
+
+    it "leaves RSpec's own metadata and what the payload carries anyway out of the comparison" do
+      group = RSpec.describe("G") do
+        it("skips") do |ex|
+          ex.metadata[:extra_failure_lines] = ["more"]
+          ex.metadata[:last_run_status] = "changed"
+          skip "later"
+        end
+      end
+      group.run(reporter)
+
+      payload = frames.find { |f| f.first == :example_finished }.last
+      expect(payload[:metadata]).to be_nil
+      expect(payload).to include(:skip => true, :pending_message => "later", :extra_failure_lines => ["more"])
+    end
+
+    it "names metadata set to values that cannot be marshaled instead of sending them" do
+      group = RSpec.describe("G") do
+        it("sets a proc") { |ex| ex.metadata[:callback] = lambda {} }
+      end
+      group.run(reporter)
+
+      payload = frames.find { |f| f.first == :example_finished }.last
+      expect(payload[:metadata]).to eq(:unsent => { ":callback" => "Proc" })
+    end
+
+    it "copes with values whose `hash` raises and with deleted keys that cannot be marshaled" do
+      unhashable = Object.new
+      def unhashable.hash
+        raise "no hash"
+      end
+      anonymous_key = Class.new
+      group = RSpec.describe("G", anonymous_key => true, :odd => unhashable) do
+        it("deletes") { |ex| ex.metadata.delete(anonymous_key) }
+      end
+      group.run(reporter)
+
+      payload = frames.find { |f| f.first == :example_finished }.last
+      expect(payload[:metadata]).to be_nil
+    end
+
+    it "forwards metadata a worker listener sets once the example finished" do
+      listener = Object.new
+      def listener.example_passed(notification)
+        notification.example.metadata[:screenshot] = "after.png"
+      end
+      reporter.register_listener(listener, :example_passed)
+
+      RSpec.describe("G") { it("passes") {} }.run(reporter)
+
+      payload = frames.find { |f| f.first == :example_finished }.last
+      expect(payload[:metadata]).to eq(:set => { :screenshot => "after.png" })
+    end
+
     it "sets the world's `wants_to_quit` when the coordinator asks it to quit between examples" do
       jobs.last.send([:quit])
       group = RSpec.describe("G") do

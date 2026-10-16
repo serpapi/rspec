@@ -24,6 +24,8 @@ module RSpec
         # itself and reports what it loaded.
         def start
           @started_at = now
+          # A spawned worker starts Ruby and loads the `--require`d files first.
+          @boot_allowance = Parallel.spawning? ? Process.times.then { |times| times.utime + times.stime } : 0.0
           start_workers(nil)
         end
 
@@ -38,6 +40,7 @@ module RSpec
           live = live_workers
           live.each { |worker| dismiss_worker(worker) }
           give_up_unless_gone(live, @kill_grace)
+          WorkerOutput.remove_directory(@output_dir)
         end
 
       private
@@ -74,7 +77,9 @@ module RSpec
         # parent never holds more than its own ends of the earlier ones.
         def start_workers(units)
           Parallel.flush_output(@configuration)
-          @process.warmup if @process.respond_to?(:warmup)
+          # Shares more memory with forked workers; spawned ones share none.
+          @process.warmup if @process.respond_to?(:warmup) && !Parallel.spawning?
+          @output_dir ||= WorkerOutput.make_directory
 
           @worker_count.times do |index|
             break unless start_worker(index + 1, units)
@@ -83,7 +88,7 @@ module RSpec
 
         # @return [Boolean] whether the worker started
         def start_worker(number, units)
-          worker = WorkerHandle.new(number)
+          worker = WorkerHandle.new(number, @output_dir)
           worker.loading = units.nil?
           @workers << worker
           worker.pid = @spawn.call(worker, @workers)
@@ -107,6 +112,43 @@ module RSpec
           worker.fork_worker(@process, @units, workers, :signal_handlers => @signal_handlers)
         end
 
+        # The `rspec` command this process runs, run again by the same Ruby
+        # with this process's load path.
+        def spawn_worker(worker, _workers)
+          script, args = Runner.command_line
+          command = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", script, *args]
+          environment = SpawnedWorker.environment(worker.number, Process.pid, @configuration.seed, worker.output&.paths)
+          worker.spawn_worker(@process, command, environment)
+        end
+
+        # What a worker that loaded the spec files itself printed while it
+        # did is what this process printed when it loaded them.
+        def output(worker, sizes)
+          return unless worker.output
+          return worker.output.skip(sizes) if worker.loading
+
+          worker.output.read(sizes) { |stream, bytes| show_output(worker, stream, bytes) }
+        end
+
+        # What is left in a worker's output files once it has gone: what it
+        # printed after it last reported, such as a crash report or what its
+        # `at_exit` handlers printed.
+        def drain_output(worker)
+          return unless worker.output
+
+          worker.output.read { |stream, bytes| show_output(worker, stream, bytes) }
+          worker.output.close
+        end
+
+        # A worker dismissed before the run used it has only loaded the spec
+        # files, which this process did too; before the run reports, no
+        # worker has run anything.
+        def show_output(worker, stream, bytes)
+          return if worker.state == :dismissed || @sequencer.nil?
+
+          @sequencer.output(worker.number, stream, bytes)
+        end
+
         # Including those a failed `fork` left without a process.
         def live_workers
           @workers.each { |worker| worker.state = :exited if worker.pid.nil? }
@@ -119,7 +161,7 @@ module RSpec
         def expect_loading_workers
           @suite_digest = Parallel.suite_digest(@world)
           @load_failed = @world.non_example_failure
-          deadline = now + (now - @started_at) + @configuration.parallel_shutdown_timeout
+          deadline = now + (now - @started_at) + @boot_allowance + @configuration.parallel_shutdown_timeout
           @load_allowance = deadline - @started_at
           @workers.each { |worker| worker.deadline = deadline if worker.loading }
         end
@@ -174,6 +216,7 @@ module RSpec
           wait_for_exit(workers, grace)
           workers.reject(&:done?).each do |worker|
             report "#{worker.description} survived SIGKILL; giving up on it."
+            drain_output(worker)
             abort_unit(worker)
             worker.state = :abandoned
           end

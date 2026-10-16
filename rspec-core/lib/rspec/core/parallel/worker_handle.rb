@@ -16,9 +16,12 @@ module RSpec
         attr_accessor :loading
         # Forked, and has not sent anything yet.
         attr_accessor :starting
+        # Its standard output and error, or `nil` when it writes where the run does.
+        attr_reader :output
 
-        def initialize(number)
+        def initialize(number, output_dir=nil)
           @number = number
+          @output = output_dir && WorkerOutput.new(output_dir, number)
           @child_jobs, @jobs = Channel.pipe
           begin
             @results, @child_results = Channel.pipe
@@ -98,9 +101,16 @@ module RSpec
             # :nocov: - runs in the forked worker process, covered by integration specs
             handles.each { |other| other.close_all unless other.equal?(self) }
             close_parent_ends
-            Worker.new(@number, units, @child_jobs, @child_results, worker_options).run
+            Worker.new(@number, units, @child_jobs, @child_results,
+                       worker_options.merge(:output => @output&.paths)).run
             # :nocov:
           end
+        end
+
+        # @return [Integer] the pid of a new process running `command`, its
+        #   jobs on its standard input and its results on its standard output
+        def spawn_worker(process, command, environment)
+          process.spawn(environment, *command, :in => @child_jobs.io, :out => @child_results.io)
         end
 
         def close_parent_ends
@@ -147,7 +157,12 @@ module RSpec
         def signal(process, signal_name, escalation, deadline)
           @escalation = escalation
           self.deadline = deadline
-          process.kill(signal_name, @pid) if @pid
+          begin
+            process.kill(signal_name, @pid) if @pid
+          rescue Errno::EINVAL
+            # Windows cannot send SIGTERM.
+            process.kill('KILL', @pid)
+          end
         rescue Errno::ESRCH, Errno::EPERM
           nil
         end

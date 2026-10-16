@@ -27,6 +27,9 @@ module RSpec
 
           def initialize(io)
             @io = io
+            # No newline conversion on Windows, where a spawned worker's
+            # standard input and output start in text mode.
+            @io.binmode
             @io.set_encoding ENCODING
             @io.sync = true
           end
@@ -51,6 +54,7 @@ module RSpec
 
           def initialize(io)
             @io = io
+            @io.binmode
             @io.set_encoding ENCODING
             @buffer = String.new(:encoding => ENCODING)
             @offset = 0
