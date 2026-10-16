@@ -418,7 +418,15 @@ exiting in time. Which examples ran before that depends on timing. To make such
 an `exit` fail the example instead, rescue `SystemExit` in an `around` hook.
 
 Workers also exit on their own if the
-coordinating process disappears. SIGTERM or SIGHUP to the coordinating
+coordinating process disappears. One that cannot -- stopped, or stuck before
+it runs any of RSpec's code, as a deadlock in a `fork` handler leaves it -- is
+stopped by a small process the run starts before forking its first worker,
+which outlives a coordinating process killed with SIGKILL: it gives the
+workers it was told about a moment to leave, then sends them SIGTERM and 5
+seconds later SIGKILL, and removes their output files. It signals only those
+workers, and only while they are in the run's process group; one forked
+moments before the coordinating process was killed may not have been
+registered yet. SIGTERM or SIGHUP to the coordinating
 process, as `timeout` or a cancelled CI job sends, stops every worker -- even
 one that cannot tear down -- before the process ends the way a serial run
 would, and the output says which example each worker was running and for how

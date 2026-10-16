@@ -606,6 +606,11 @@ module RSpec
       attr_writer :reporter
 
       # @private
+      # Used by the parallel runner so that a spawned worker's formatters,
+      # which never run, do not open the files the coordinating process's do.
+      attr_writer :formatter_loader
+
+      # @private
       def reset_filters
         self.filter_manager = FilterManager.new
         filter_manager.include_only(

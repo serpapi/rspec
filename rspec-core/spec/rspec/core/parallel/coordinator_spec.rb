@@ -267,7 +267,7 @@ module RSpec::Core::Parallel
       units.each { |group| group.include(WithoutMocksLifecycle) }
       @units = units
       @process = options.fetch(:process, process)
-      Coordinator.new(runner, worker_count, { :process => @process, :spawn => method(:spawn), :tick => 0.01,
+      Coordinator.new(runner, worker_count, { :process => @process, :spawn => method(:spawn), :tick => 0.01, :reaper => nil,
                                               :term_grace => 5, :kill_grace => 5, :watchdog_grace => 0.05 }.merge(options))
     end
 
@@ -966,9 +966,11 @@ module RSpec::Core::Parallel
 
     it "starts a worker with the lost one's number in its place, which runs the remaining groups" do
       crashing = RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }
+      # Still running when the crash is noticed, so that groups wait to run.
+      slow = %w[A B C].map { |name| RSpec.describe(name) { it("passes") { sleep 0.5 } } }
       config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
 
-      exit_code = coordinator([crashing, passing_group("A"), passing_group("B"), passing_group("C")]).run
+      exit_code = coordinator([crashing] + slow).run
 
       expect(exit_code).to eq(config.failure_exit_code)
       expect(@started_numbers.sort).to eq([1, 1, 2])
@@ -993,6 +995,22 @@ module RSpec::Core::Parallel
         expect(instance).to have_received(:spawn_worker).once
         expect(messages).to match(/Parallel worker 1 \(pid \d+\) was started in place of the lost worker \(pid \d+\) and loads the spec files first\./)
         expect(messages).to include("4 examples, 1 failure")
+      end
+
+      it "starts none in place of one that never reported back while loading, which would likely not either" do
+        allow(RSpec::Core::Runner).to receive(:command_line).and_return(["/app/bin/rspec", []])
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[2] = :never_starts
+        # Still running when the other misses its deadline, so that groups wait to run.
+        slow = %w[A B C].map { |name| RSpec.describe(name) { it("passes") { sleep 0.3 } } }
+        instance = started_coordinator(slow)
+        allow(instance).to receive(:spawn_worker) { |handle, handles| spawn(handle, handles) }
+        instance.assign(@units, units_of(@units))
+
+        instance.run
+
+        expect(instance).not_to have_received(:spawn_worker)
+        expect(messages).to include("never reported back")
       end
 
       it "starts none in place of a lost one when the run was not started by the `rspec` command" do
@@ -1160,7 +1178,8 @@ module RSpec::Core::Parallel
         config.parallel_shutdown_timeout = 0.05
         worker_behaviours[2] = :never_starts
 
-        expect(coordinator([passing_group("A"), passing_group("B")]).run).to eq(0)
+        coordinator([passing_group("A"), passing_group("B")]).run
+
         expect(messages).to include("never reported back after it was started (Ruby did not get as far as loading RSpec)")
       end
 

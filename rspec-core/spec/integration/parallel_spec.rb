@@ -303,7 +303,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
         def example_passed(notification)
           metadata = notification.example.metadata
           @output.puts \"META \#{notification.example.description}: \#{metadata[:screenshot].inspect} \" \\
-                       \"\#{metadata[:tags].inspect} \#{metadata.key?(:gone)} \#{metadata[:callback].class}\"
+                       \"\#{metadata[:tags].inspect} \#{metadata.key?(:gone)} \#{metadata[:callback].class} \#{metadata[:lazy].class}\"
         end
       end
     "
@@ -316,22 +316,32 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
             ex.metadata.delete(:gone)
           end
           it('callback#{i}') { |ex| ex.metadata[:callback] = lambda {} }
+          it('lazy#{i}') { |ex| Object.const_set(:ParallelSpecLazyThing, Class.new) unless defined?(ParallelSpecLazyThing); ex.metadata[:lazy] = ParallelSpecLazyThing.new }
         end
       "
     end
     options = '--require ./spec/support/metadata_formatter --format progress --format MetadataFormatter'
 
-    run_rspec options
-    serial = last_cmd_stdout.scan(/META .*$/).sort
-    expect(serial.size).to eq(8)
-    expect(serial.first).to eq("META callback0: nil nil true Proc")
-    expect(serial).to include("META e3: \"shot-3.png\" [\"a\", \"b\"] false NilClass")
-
+    # In parallel first: a serial run in this process would define the class here too.
     run_rspec "#{options} --parallel=2"
     parallel = last_cmd_stdout.scan(/META .*$/).sort
-    expect(parallel).to eq(serial.map { |line| line.sub(/ Proc$/, ' NilClass') })
-    expect(last_cmd_stderr.scan("set example metadata :callback to a Proc").size).to eq(1)
+    expect(last_cmd_stdout).to include("12 examples, 0 failures")
     expect(last_cmd_exit_status).to eq(0)
+    stderr = last_cmd_stderr
+
+    run_rspec options
+    serial = last_cmd_stdout.scan(/META .*$/).sort
+    expect(serial.size).to eq(12)
+    expect(serial.first).to eq("META callback0: nil nil true Proc NilClass")
+    expect(serial).to include("META e3: \"shot-3.png\" [\"a\", \"b\"] false NilClass NilClass",
+                              "META lazy0: nil nil true NilClass ParallelSpecLazyThing")
+
+    # A Proc cannot be marshaled; the class is defined only in the worker that ran the example.
+    expect(parallel).to eq(serial.map { |line| line.sub(' Proc ', ' NilClass ').sub(/ ParallelSpecLazyThing$/, ' NilClass') })
+    expect(stderr.scan('set example metadata :callback to a value that cannot reach the formatters (Proc cannot be marshaled)').size).to eq(1)
+    expect(stderr.scan('set example metadata :lazy to a value that cannot reach the formatters (it cannot be loaded here (ArgumentError: undefined class/module ParallelSpecLazyThing').size).to eq(1)
+  ensure
+    Object.send(:remove_const, :ParallelSpecLazyThing) if defined?(ParallelSpecLazyThing)
   end
 
   it 'shows what workers print with the example group that printed it, as a serial run does' do
@@ -398,6 +408,24 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     crashed_pid, crashed_env = ran['ran_r0']
     replacement = ran.values.find { |pid, env| env == crashed_env && pid != crashed_pid }
     expect(replacement).not_to be_nil
+  end
+
+  it 'leaves the file of a formatter that a helper the spec files require adds to the coordinating process' do
+    write_file_formatted 'spec/helper.rb', "RSpec.configure { |c| c.add_formatter 'documentation', 'out.txt' }"
+    4.times do |i|
+      write_file_formatted "spec/f#{i}_spec.rb", "
+        require_relative 'helper'
+        RSpec.describe('F#{i}') { it('runs') { #{i == 1 ? 'Process.kill(:KILL, Process.pid)' : 'sleep 0.5'} } }
+      "
+    end
+
+    # Workers that load the spec files require the helper too; the one started in place of the killed one, mid-run.
+    status, _stdout, _stderr = rspec_process('--parallel=2', '--no-parallel-preload', '--order', 'defined')
+
+    expect(status.exitstatus).to eq(1)
+    report = cd('.') { File.binread('out.txt') }
+    expect(report).not_to include("\0")
+    expect(report).to include("F0", "F2", "F3", "was started in place of the lost worker", "4 examples, 1 failure")
   end
 
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
@@ -931,6 +959,40 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     end
   end
 
+  it 'stops workers that cannot notice the coordinating process is gone once it is killed, and removes their files' do
+    write_file_formatted 'spec/stopped_spec.rb', "
+      RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
+      RSpec.describe('One') { it('stops itself') { Process.kill(:STOP, Process.pid) } }
+      RSpec.describe('Two') { it('stops itself') { Process.kill(:STOP, Process.pid) } }
+    "
+    wait_until = lambda do |seconds, &condition|
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+      sleep 0.05 until condition.call || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      condition.call
+    end
+    state = lambda { |pid| `ps -o stat= -p #{pid}`.strip }
+    # A stopped worker runs none of its code -- like one deadlocked in a fork
+    # handler -- and keeps every descriptor it inherited.
+    stopped = lambda { |pid| state.call(pid).start_with?('T') }
+    running = lambda { |pid| !state.call(pid).empty? && !state.call(pid).start_with?('Z') }
+
+    cd('.') do
+      Dir.mkdir('tmp')
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil, 'TMPDIR' => File.expand_path('tmp') }, *rspec, '--parallel=2',
+                          'spec/stopped_spec.rb', :out => File::NULL, :err => 'stderr.txt')
+      expect(wait_until.call(20) { worker_pids.size == 2 && worker_pids.all?(&stopped) }).to be true
+      workers = worker_pids
+
+      Process.kill(:KILL, pid)
+      Process.wait(pid)
+
+      expect(wait_until.call(15) { workers.none?(&running) }).to be true
+      expect(File.read('stderr.txt')).to include("ended without stopping its workers; stopped 2 still running")
+      expect(wait_until.call(5) { Dir['tmp/*'].empty? }).to be true
+    end
+  end
+
   it 'stops workers stuck in an example once the coordinating process is gone' do
     write_file_formatted 'spec/stuck_spec.rb', "
       RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
@@ -1375,7 +1437,8 @@ RSpec.describe 'Parallel execution without fork (spawned workers)', :slow do
 
     status, stdout, stderr = rspec_process(*without_fork, '--require', './spec/spec_helper', '--parallel=2')
 
-    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 30
+    # Its `after(:suite)` hooks never return: that it ends at all is the bound (JRuby's startup is most of the time).
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 55
     expect(stdout).to include("6 examples, 1 failure")
     expect(stderr.scan("did not exit within 1 second of finishing its last example group").size).to eq(2)
     expect(status.exitstatus).to eq(1)

@@ -138,6 +138,8 @@ module RSpec
           ENV['TEST_ENV_NUMBER'] = test_env_number
           @configuration.parallel_worker_number = @number
           @configuration.reset_reporter
+          # For formatters that helpers the spec files require add.
+          @configuration.formatter_loader = FormatterLoader.new(Reporter.new(@configuration)) unless @example_groups
           @reporter = WorkerReporter.new(@configuration, @results, @jobs, @world)
           @configuration.reporter = @reporter
         end
@@ -318,6 +320,18 @@ module RSpec
             Array(thread.backtrace).each { |line| stderr.puts "    #{line}" }
           end
           stderr.flush
+        end
+
+        # Opens no files: a worker's formatters never run, and the
+        # coordinating process writes to the files they would.
+        # @private
+        class FormatterLoader < Formatters::Loader
+          private
+
+          # @private
+          def open_stream(_path_or_wrapper)
+            File.open(File::NULL, "w")
+          end
         end
 
         # Reports nothing: while a worker loads the spec files, what they

@@ -54,6 +54,21 @@ module RSpec::Core::Parallel
       expect(read).to eq([])
     end
 
+    it "writes what a worker printed as it was written, also to a stream with an encoding of its own" do
+      # A file, which (unlike a StringIO) transcodes what is written to it.
+      path = File.join(dir, 'stdout')
+      original = $stdout
+      $stdout = File.open(path, 'w:UTF-8')
+      begin
+        WorkerOutput.write(:out, "caf\xC3\xA9 \xFF\n".b)
+      ensure
+        $stdout.close
+        $stdout = original
+      end
+
+      expect(File.binread(path)).to eq("caf\xC3\xA9 \xFF\n".b)
+    end
+
     it "goes without a directory when none can be made" do
       allow(Dir).to receive(:mktmpdir).and_raise(Errno::EACCES)
       expect(WorkerOutput.make_directory).to be_nil

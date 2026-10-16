@@ -140,12 +140,9 @@ module RSpec
         # Called periodically by the coordinator.
         def tick(now=@clock.call)
           return unless @sequenced
+          return unless @completed.any?
 
-          if @stats[:queued] >= QUEUE_BOUND || @stats[:queued_bytes] >= QUEUE_BYTES_BOUND
-            flush_everything
-          elsif @completed.any? && (now - @last_delivery_at >= SILENCE_BOUND || now - @completed.first.completed_at >= WAIT_BOUND)
-            flush_completed
-          end
+          flush_completed if now - @last_delivery_at >= SILENCE_BOUND || now - @completed.first.completed_at >= WAIT_BOUND
         end
 
         # Delivers everything still queued and closes any open group.
@@ -202,6 +199,8 @@ module RSpec
           @stats[:queued_bytes] += event.bytes
           @stats[:peak_queued] = [@stats[:peak_queued], @stats[:queued]].max
           @stats[:peak_queued_bytes] = [@stats[:peak_queued_bytes], @stats[:queued_bytes]].max
+          # At once: output read in chunks between two frames must not pile up.
+          flush_everything if @stats[:queued] >= QUEUE_BOUND || @stats[:queued_bytes] >= QUEUE_BYTES_BOUND
         end
 
         def deliver(stream, event)

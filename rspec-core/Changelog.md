@@ -19,7 +19,8 @@ Enhancements:
   parallel_tests does. A worker that finishes but does not exit is aborted after
   `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its
   threads, so a stuck `at_exit` handler can no longer hang a run (nor can one that runs
-  after code under test called `exit`); neither can a worker stuck in `fork`. A worker
+  after code under test called `exit`); neither can a worker stuck in `fork`, even once the
+  coordinating process is killed with SIGKILL. A worker
   that crashes fails the example it was running instead of taking the run down, while
   the examples of its group it had not started run in another worker, and a new worker
   with its `TEST_ENV_NUMBER` takes its place. Code that calls

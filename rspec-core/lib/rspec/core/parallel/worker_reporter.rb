@@ -167,8 +167,11 @@ module RSpec
 
         # @return [Hash, nil] what the example, its hooks or a worker listener
         #   did to its metadata: keys set (`:set`) or deleted (`:deleted`),
-        #   and those set to values that cannot be marshaled (`:unsent`, the
-        #   values' class names), which the coordinator leaves as they were.
+        #   each as the key's `inspect` and its own `Marshal` dump -- so that
+        #   one the coordinator cannot load (its class is not loaded there)
+        #   spoils only itself -- and keys set to values that cannot be
+        #   marshaled (`:unsent`, with the reason), which the coordinator
+        #   leaves as they were.
         def metadata_changes(metadata)
           before = @metadata_before || {}
           @metadata_before = nil
@@ -176,26 +179,29 @@ module RSpec
           metadata.each do |key, value|
             next if NOT_COMPARED.key?(key) || unchanged?(before[key], value)
 
-            if marshalable?([key, value])
-              (changes[:set] ||= {})[key] = value
+            if (dump = marshaled([key, value]))
+              (changes[:set] ||= []) << [key.inspect, dump]
             else
-              (changes[:unsent] ||= {})[key.inspect] = value.class.name
+              (changes[:unsent] ||= {})[key.inspect] = "#{value.class.name} cannot be marshaled"
             end
           end
-          deleted = before.keys.reject { |key| metadata.key?(key) || !marshalable?(key) }
+          deleted = deleted_keys(before, metadata)
           changes[:deleted] = deleted unless deleted.empty?
           changes.empty? ? nil : changes
+        end
+
+        def deleted_keys(before, metadata)
+          before.keys.reject { |key| metadata.key?(key) }.filter_map { |key| (dump = marshaled(key)) && [key.inspect, dump] }
         end
 
         def unchanged?(snapshot, value)
           snapshot && snapshot[0].equal?(value) && snapshot[1] == hash_of(value)
         end
 
-        def marshalable?(value)
+        def marshaled(value)
           Marshal.dump(value)
-          true
         rescue StandardError
-          false
+          nil
         end
 
         def hash_of(value)

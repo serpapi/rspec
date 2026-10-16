@@ -113,8 +113,8 @@ module RSpec
         # Ruby, or a library's fork handler) leaves a process: it has run
         # nothing, so the group it was given goes to another worker as is.
         def never_started(worker)
+          worker.lost = !worker.loading
           worker.loading = false
-          worker.lost = true
           index = worker.current_unit
           requeue = index && accepting_work?
           stuck = if Parallel.spawning?

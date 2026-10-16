@@ -8,6 +8,7 @@ RSpec::Support.require_rspec_core "parallel/sequencer"
 RSpec::Support.require_rspec_core "parallel/results"
 RSpec::Support.require_rspec_core "parallel/suite_index"
 RSpec::Support.require_rspec_core "parallel/worker_output"
+RSpec::Support.require_rspec_core "parallel/reaper"
 RSpec::Support.require_rspec_core "parallel/worker_handle"
 RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
 RSpec::Support.require_rspec_core "parallel/worker_exits"
@@ -52,6 +53,8 @@ module RSpec
           @term_grace = options.fetch(:term_grace, TERM_GRACE)
           @kill_grace = options.fetch(:kill_grace, KILL_GRACE)
           @watchdog_grace = options.fetch(:watchdog_grace, WATCHDOG_GRACE)
+          @reaper_class = options.fetch(:reaper) { Reaper }
+          @reaper = nil
           @workers = []
           @results = Results.new
           @quitting = false
@@ -114,8 +117,7 @@ module RSpec
           begin
             terminate_remaining_workers
           ensure
-            Parallel.restore_signals(@signal_handlers)
-            WorkerOutput.remove_directory(@output_dir)
+            clean_up
           end
         end
 
@@ -252,25 +254,9 @@ module RSpec
         def example_finished(worker, example_id, payload, bytes)
           index.with_example(example_id) do |example|
             worker.current_example = nil
+            payload[:metadata] = @results.metadata_changes(worker.description, payload[:metadata])
             record_result(example, payload)
-            warn_unsent_metadata(worker, payload[:metadata])
             @sequencer.example_finished(worker.number, example, bytes)
-          end
-        end
-
-        # Once per metadata key.
-        def warn_unsent_metadata(worker, changes)
-          unsent = changes && changes[:unsent]
-          return unless unsent
-
-          @unsent_metadata ||= {}
-          unsent.each do |key, class_name|
-            next if @unsent_metadata.key?(key)
-
-            @unsent_metadata[key] = true
-            RSpec.warning "#{worker.description} set example metadata #{key} to a #{class_name}, which cannot be " \
-                          "marshaled to reach the formatters, so they see the value it had before the example ran. " \
-                          "Later values of #{key} that cannot be marshaled are not reported", :call_site => nil
           end
         end
 
@@ -398,6 +384,7 @@ module RSpec
             worker.exit_status = status
             judge_exit(worker, status)
             worker.state = :exited
+            @reaper&.forget(worker.pid)
             replace(worker)
           end
         end
