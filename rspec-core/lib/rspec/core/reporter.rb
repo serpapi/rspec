@@ -157,15 +157,24 @@ module RSpec::Core
     end
 
     # @private
+    # Records the duration of a top-level example group that ran in another
+    # process (see `Parallel`), in place of the time observed here.
+    def record_example_group_duration(group, duration)
+      ensure_listeners_ready
+      @profiler.record_group_duration(group, duration)
+    end
+
+    # @private
     # Provides a way to notify of an exception that is not tied to any
     # particular example (such as an exception encountered in a :suite hook).
-    # Exceptions will be formatted the same way they normally are.
-    def notify_non_example_exception(exception, context_description)
+    # Exceptions will be formatted the same way they normally are, unless
+    # `presenter_options` say otherwise (`:failure_lines`).
+    def notify_non_example_exception(exception, context_description, presenter_options={})
       @configuration.world.non_example_failure = true
       @non_example_exception_count += 1
 
       example = Example.new(AnonymousExampleGroup, context_description, {})
-      presenter = Formatters::ExceptionPresenter.new(exception, example, :indentation => 0)
+      presenter = Formatters::ExceptionPresenter.new(exception, example, { :indentation => 0 }.merge(presenter_options))
       message presenter.fully_formatted(nil)
     end
 

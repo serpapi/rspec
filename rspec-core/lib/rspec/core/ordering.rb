@@ -160,6 +160,13 @@ module RSpec
           @seed = seed.to_i
         end
 
+        # @private
+        # The seed of the parallel run a spawned worker belongs to, taken
+        # without choosing an ordering: the run's configuration does that.
+        def adopt_seed(seed)
+          @seed = seed.to_i unless @seed_forced
+        end
+
         def order=(type)
           order, seed = type.to_s.split(':')
           @seed = seed.to_i if seed

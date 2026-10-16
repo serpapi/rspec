@@ -278,3 +278,9 @@ end
 
 World(Normalization)
 World(FormatterSupport)
+
+Then(/^the files the examples wrote should name (\d+) processes$/) do |count|
+  cd('.') do
+    expect(Dir['ran_*_in_*'].map { |file| file[/\d+\z/] }.uniq.size).to eq(Integer(count))
+  end
+end

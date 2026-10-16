@@ -335,6 +335,43 @@ module RSpec::Core
       end
     end
 
+    describe "--parallel" do
+      it "requests one worker per processor without an argument" do
+        expect(Parser.parse(%w[ --parallel ])[:parallel_workers]).to eq(:auto)
+      end
+
+      it "requests the given number of workers" do
+        expect(Parser.parse(%w[ --parallel=4 ])[:parallel_workers]).to eq(4)
+      end
+
+      it "does not swallow a following path as its argument" do
+        options = Parser.parse(%w[ --parallel spec/models ])
+        expect(options[:parallel_workers]).to eq(:auto)
+        expect(options[:files_or_directories_to_run]).to eq(%w[ spec/models ])
+      end
+
+      it "runs serially with a count of 0, like --no-parallel, overriding an earlier --parallel" do
+        expect(Parser.parse(%w[ --parallel=0 ])).to include(:parallel_workers => nil)
+        expect(Parser.parse(%w[ --parallel=4 --no-parallel ])).to include(:parallel_workers => nil)
+      end
+
+      %w[ lots 2.5 -1 ].push("").each do |count|
+        it "aborts with a usage message for the count #{count.inspect}" do
+          parser = Parser.new(["--parallel=#{count}"])
+          message = "Expected a non-negative integer for `--parallel`, got: #{count.inspect}"
+          expect(parser).to receive(:abort).with(a_string_including(message, 'use --help'))
+          parser.parse
+        end
+      end
+    end
+
+    describe "--[no-]parallel-preload" do
+      it "chooses whether the spec files are loaded before forking the workers or by each of them" do
+        expect(Parser.parse(%w[ --parallel-preload ])).to include(:parallel_preload => true)
+        expect(Parser.parse(%w[ --no-parallel-preload ])).to include(:parallel_preload => false)
+      end
+    end
+
     describe "--bisect" do
       it "sets the `:bisect` option" do
         options = Parser.parse(%w[ --bisect ])

@@ -112,27 +112,27 @@ module RSpec::Core
       it 'includes the current load path as an option to `ruby`, not as an option to `rspec`' do
         cmd = command_for([], :load_path => %W[ lp/foo lp/bar ])
         if uses_quoting_for_escaping?
-          expect(cmd).to first_include("-I'lp/foo':'lp/bar'").then_include(RSpec::Core.path_to_executable)
+          expect(cmd).to first_include("-I'lp/foo'#{File::PATH_SEPARATOR}'lp/bar'").then_include(RSpec::Core.path_to_executable)
         else
-          expect(cmd).to first_include("-Ilp/foo:lp/bar").then_include(RSpec::Core.path_to_executable)
+          expect(cmd).to first_include("-Ilp/foo#{File::PATH_SEPARATOR}lp/bar").then_include(RSpec::Core.path_to_executable)
         end
       end
 
       it 'escapes the load path entries' do
         cmd = command_for([], :load_path => ['l p/foo', 'l p/bar' ])
         if uses_quoting_for_escaping?
-          expect(cmd).to first_include("-I'l p/foo':'l p/bar'").then_include(RSpec::Core.path_to_executable)
+          expect(cmd).to first_include("-I'l p/foo'#{File::PATH_SEPARATOR}'l p/bar'").then_include(RSpec::Core.path_to_executable)
         else
-          expect(cmd).to first_include('-Il\ p/foo:l\ p/bar').then_include(RSpec::Core.path_to_executable)
+          expect(cmd).to first_include("-Il\\ p/foo#{File::PATH_SEPARATOR}l\\ p/bar").then_include(RSpec::Core.path_to_executable)
         end
       end
 
       it 'supports Pathnames in the load path' do
         cmd = command_for([], :load_path => [Pathname('l p/foo'), Pathname('l p/bar') ])
         if uses_quoting_for_escaping?
-          expect(cmd).to first_include("-I'l p/foo':'l p/bar'").then_include(RSpec::Core.path_to_executable)
+          expect(cmd).to first_include("-I'l p/foo'#{File::PATH_SEPARATOR}'l p/bar'").then_include(RSpec::Core.path_to_executable)
         else
-          expect(cmd).to first_include('-Il\ p/foo:l\ p/bar').then_include(RSpec::Core.path_to_executable)
+          expect(cmd).to first_include("-Il\\ p/foo#{File::PATH_SEPARATOR}l\\ p/bar").then_include(RSpec::Core.path_to_executable)
         end
       end
     end

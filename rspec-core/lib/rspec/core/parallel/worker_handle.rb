@@ -1,0 +1,186 @@
+module RSpec
+  module Core
+    module Parallel
+      # Coordinator-side bookkeeping for one worker process.
+      # @private
+      class WorkerHandle
+        attr_reader :number, :jobs, :results, :child_jobs, :child_results, :current_example, :current_example_started_at
+        attr_accessor :pid, :current_unit, :state, :escalation, :exit_status, :quit_sent, :exiting, :exit_cause
+        # The status it was asked to `exit` with; the examples and the last
+        # group it started of its current unit.
+        attr_accessor :called_exit, :started_example_ids, :last_started_group
+        # When the deadline was set: only a pause after that postpones it.
+        attr_reader :deadline, :deadline_set_at
+        # Forked before the spec files were loaded and has not yet reported
+        # what it loaded.
+        attr_accessor :loading
+        # Forked, and has not sent anything yet.
+        attr_accessor :starting
+        # Its standard output and error, or `nil` when it writes where the run does.
+        attr_reader :output
+        # Lost while it ran groups: crashed, killed or terminated.
+        attr_accessor :lost
+
+        # A worker started in place of a lost one has its number and a later
+        # `generation`.
+        def initialize(number, output_dir=nil, generation=1)
+          @number = number
+          @output = output_dir && WorkerOutput.new(output_dir, generation == 1 ? number : "#{number}-#{generation}")
+          @lost = false
+          @child_jobs, @jobs = Channel.pipe
+          begin
+            @results, @child_results = Channel.pipe
+          rescue SystemCallError
+            [@child_jobs, @jobs].each(&:close)
+            raise
+          end
+          @state = :running
+          @quit_sent = false
+          @exiting = false
+          @loading = false
+          @starting = @start_deadline = false
+          @pid = @current_unit = @deadline = @deadline_set_at = @escalation = @exit_status = @exit_cause = @called_exit = nil
+          @started_example_ids = {}
+          @last_started_group = nil
+          @current_example = @current_example_started_at = nil
+        end
+
+        def deadline=(value)
+          @deadline = value
+          @deadline_set_at = value && Parallel.monotonic_time
+          @start_deadline = false
+        end
+
+        # The deadline for its first frame, which any other deadline replaces.
+        def start_deadline=(value)
+          self.deadline = value
+          @start_deadline = true
+        end
+
+        def clear_start_deadline
+          self.deadline = nil if @start_deadline
+        end
+
+        # Moves the deadline back without changing when it was set.
+        def postpone(seconds)
+          @deadline += seconds if @deadline
+        end
+
+        def current_example=(example)
+          @current_example = example
+          @current_example_started_at = example && RSpec::Core::Time.now
+        end
+
+        # @return [String, nil] the example this worker is in the middle of,
+        #   and for how long it has been running
+        def running_example_description
+          return nil unless @current_example
+
+          "#{description} was running #{@current_example.location_rerun_argument || @current_example.id} " \
+            "(#{@current_example.full_description}) for " \
+            "#{Parallel.seconds(RSpec::Core::Time.now - @current_example_started_at)}."
+        end
+
+        # @return [Array(Example, Hash)] the example this worker was running
+        #   when it was lost, and a result failing it with `text`
+        def lost_example_result(text)
+          example = @current_example
+          result = self.class.failed_result(example, text, @current_example_started_at)
+          self.current_example = nil
+          [example, result]
+        end
+
+        # @return [Hash] a result failing `example` with a {WorkerError}
+        def self.failed_result(example, text, started_at=RSpec::Core::Time.now)
+          exception = WorkerError.new(text)
+          exception.set_backtrace([example.location])
+          finished_at = RSpec::Core::Time.now
+          { :status => :failed, :started_at => started_at, :finished_at => finished_at,
+            :run_time => finished_at - started_at, :exception => RemoteException.payload_for(exception) }
+        end
+
+        # @return [Integer] the pid of the worker process forked to run `units`,
+        #   or to load the spec files itself when there are none yet
+        def fork_worker(process, units, handles, worker_options={})
+          process.fork do
+            # :nocov: - runs in the forked worker process, covered by integration specs
+            handles.each { |other| other.close_all unless other.equal?(self) }
+            close_parent_ends
+            Worker.new(@number, units, @child_jobs, @child_results,
+                       worker_options.merge(:output => @output&.paths)).run
+            # :nocov:
+          end
+        end
+
+        # @return [Integer] the pid of a new process running `command` in
+        #   this process's directory (which JRuby keeps apart from the
+        #   process's own), its jobs on its standard input and its results on
+        #   its standard output
+        def spawn_worker(process, command, environment)
+          process.spawn(environment, *command, :in => @child_jobs.io, :out => @child_results.io, :chdir => Dir.pwd)
+        end
+
+        def close_parent_ends
+          @jobs.close
+          @results.close
+        end
+
+        def close_child_ends
+          @child_jobs.close
+          @child_results.close
+        end
+
+        def close_all
+          close_parent_ends
+          close_child_ends
+        end
+
+        def idle?
+          @state == :running && @current_unit.nil? && !@loading
+        end
+
+        def busy?
+          @state == :running && !@current_unit.nil?
+        end
+
+        def done?
+          @state == :exited || @state == :abandoned
+        end
+
+        def description
+          "Parallel worker #{@number} (pid #{@pid})"
+        end
+
+        # @return [Array(Integer, Process::Status), nil] like `waitpid2` with
+        #   `WNOHANG`; a process reaped by someone else counts as exited
+        def reap(process)
+          process.waitpid2(@pid, Process::WNOHANG)
+        rescue Errno::ECHILD
+          [@pid, nil]
+        end
+
+        # Sends `signal_name` as the `escalation` step that is followed up at
+        # `deadline`.
+        def signal(process, signal_name, escalation, deadline)
+          @escalation = escalation
+          self.deadline = deadline
+          begin
+            process.kill(signal_name, @pid) if @pid
+          rescue Errno::EINVAL
+            # Windows cannot send SIGTERM.
+            process.kill('KILL', @pid)
+          end
+        rescue Errno::ESRCH, Errno::EPERM
+          nil
+        end
+
+        def self.describe_status(status)
+          return "already reaped" unless status
+          return "killed by SIG#{Signal.signame(status.termsig)}" if status.signaled?
+
+          "exit status #{status.exitstatus}"
+        end
+      end
+    end
+  end
+end

@@ -75,6 +75,14 @@ module RSpec::Core
           options[:runner] = RSpec::Core::Invocations::Bisect.new
         end
 
+        parser.on('--[no-]parallel[=COUNT]', 'Run example groups across COUNT worker processes forked after',
+                  '  loading the suite (default: one per processor; 0 runs serially). Needs `fork`.') do |argument|
+          options[:parallel_workers] = parallel_workers_from(argument)
+        end
+
+        parser.on('--[no-]parallel-preload', 'Load the spec files before forking the --parallel workers (the default),',
+                  '  or fork first and have every worker load them itself.') { |value| options[:parallel_preload] = value }
+
         parser.on('--[no-]fail-fast[=COUNT]', 'Abort the run after a certain number of failures (1 by default).') do |argument|
           if argument == true
             value = 1
@@ -299,6 +307,17 @@ FILTERING
     # rubocop:enable Metrics/MethodLength
     # rubocop:enable Metrics/CyclomaticComplexity
     # rubocop:enable Metrics/PerceivedComplexity
+
+    def parallel_workers_from(argument)
+      case argument
+      when true then :auto
+      when false, /\A0+\z/ then nil
+      when /\A\d+\z/ then Integer(argument, 10)
+      else
+        abort "Expected a non-negative integer for `--parallel`, got: #{argument.inspect}\n\n" \
+              "Please use --help for a listing of valid options"
+      end
+    end
 
     def add_tag_filter(options, filter_type, tag_name, value=true)
       (options[filter_type] ||= {})[tag_name] = value

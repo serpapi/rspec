@@ -89,9 +89,14 @@ module RSpec
       # and there is a `:slow => true` exclusion filter), but only for specs
       # defined in the same file as the location filters. Excluded specs in
       # other files should still be excluded.
+      #
+      # The emptiness checks come first because `File.expand_path` of a
+      # relative path asks the OS for the working directory, which is slow
+      # enough (tens of microseconds on macOS, more when several processes
+      # do it at once) to dominate filtering a large suite.
       def file_scoped_include?(ex_metadata, ids, locations)
-        no_id_filters = ids[ex_metadata[:rerun_file_path]].empty?
-        no_location_filters = locations[
+        no_id_filters = ids.empty? || ids[ex_metadata[:rerun_file_path]].empty?
+        no_location_filters = locations.empty? || locations[
           File.expand_path(ex_metadata[:rerun_file_path])
         ].empty?
 

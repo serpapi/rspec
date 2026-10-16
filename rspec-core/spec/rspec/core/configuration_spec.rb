@@ -35,6 +35,74 @@ module RSpec::Core
       end
     end
 
+    describe "#parallel_workers" do
+      it "defaults to `nil`, meaning a serial run" do
+        expect(config.parallel_workers).to be_nil
+      end
+
+      it "accepts a positive integer, `:auto` or `nil`" do
+        config.parallel_workers = 4
+        expect(config.parallel_workers).to eq(4)
+        config.parallel_workers = :auto
+        expect(config.parallel_workers).to eq(:auto)
+        config.parallel_workers = nil
+        expect(config.parallel_workers).to be_nil
+      end
+
+      it "warns and runs serially for anything else" do
+        [0, -1, "4", 2.5, true].each do |value|
+          expect(RSpec).to receive(:warning).with(a_string_including("Cannot set `RSpec.configuration.parallel_workers` to `#{value.inspect}`"))
+          config.parallel_workers = value
+          expect(config.parallel_workers).to be_nil
+        end
+      end
+
+      it "prefers the value forced from the command line" do
+        config.parallel_workers = 2
+        config.force(:parallel_workers => :auto)
+        expect(config.parallel_workers).to eq(:auto)
+      end
+    end
+
+    describe "#parallel_shutdown_timeout" do
+      it "defaults to 30 seconds" do
+        expect(config.parallel_shutdown_timeout).to eq(30)
+      end
+
+      it "can be changed" do
+        config.parallel_shutdown_timeout = 2.5
+        expect(config.parallel_shutdown_timeout).to eq(2.5)
+      end
+    end
+
+    describe "#parallel_preload" do
+      it "defaults to loading the spec files before forking the workers" do
+        expect(config.parallel_preload?).to be true
+      end
+
+      it "prefers the value forced from the command line" do
+        config.parallel_preload = true
+        config.force(:parallel_preload => false)
+        expect(config.parallel_preload?).to be false
+      end
+    end
+
+    describe "#parallel_worker_number" do
+      it "is nil until the parallel runner sets it in a worker" do
+        expect(config.parallel_worker_number).to be_nil
+        config.parallel_worker_number = 3
+        expect(config.parallel_worker_number).to eq(3)
+      end
+    end
+
+    describe "#reporter=" do
+      it "replaces the reporter the configuration hands out" do
+        reporter = Reporter.new(config)
+        config.reporter = reporter
+        expect(config.reporter).to be(reporter)
+      end
+    end
+
     describe "#fail_fast=" do
       context 'when true' do
         it 'is set to true' do

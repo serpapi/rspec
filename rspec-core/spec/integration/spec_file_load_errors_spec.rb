@@ -219,7 +219,7 @@ RSpec.describe 'Spec file load errors' do
           # Extra blank lines were added in 3.4.0; strip out for compat with 3.2/3.3
           expect(formatted_output.gsub("\n\n", "\n")).to include unindent(<<-EOS)
           SyntaxError:
-            --> ./tmp/aruba/broken_file.rb
+            --> ./#{aruba_working_directory}/broken_file.rb
             Unmatched keyword, missing `end' ?
               1  class WorkInProgress
             > 2    def initialize(arg)
@@ -227,7 +227,7 @@ RSpec.describe 'Spec file load errors' do
               4    end
               5  end
           EOS
-          expect(formatted_output).to include %r{./tmp/aruba/broken_file.rb:\d: syntax error}
+          expect(formatted_output).to include %r{./#{aruba_working_directory}/broken_file.rb:\d: syntax error}
 
           expect(formatted_output).to include unindent(<<-EOS)
             Finished in n.nnnn seconds (files took n.nnnn seconds to load)
@@ -249,7 +249,7 @@ RSpec.describe 'Spec file load errors' do
         EOS
 
         # This is subset of the formatted_output, it continues slightly but differs on different Rubies
-        expect(formatted_output).to include "SyntaxError:\n  ./tmp/aruba/broken_file.rb:5: syntax error"
+        expect(formatted_output).to include "SyntaxError:\n  ./#{aruba_working_directory}/broken_file.rb:5: syntax error"
 
         expect(formatted_output).to include unindent(<<-EOS)
           Finished in n.nnnn seconds (files took n.nnnn seconds to load)

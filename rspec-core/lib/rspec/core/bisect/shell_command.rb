@@ -100,7 +100,7 @@ module RSpec
         end
 
         def load_path
-          @load_path ||= "-I#{$LOAD_PATH.map { |p| escape(p) }.join(':')}"
+          @load_path ||= "-I#{$LOAD_PATH.map { |p| escape(p) }.join(File::PATH_SEPARATOR)}"
         end
 
         # Path to the currently running Ruby executable, borrowed from Rake:

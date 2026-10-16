@@ -1,6 +1,51 @@
 ### Development
 [Full Changelog](https://github.com/rspec/rspec/compare/rspec-core-v3.13.6...main)
 
+Enhancements:
+
+* Add `--[no-]parallel[=COUNT]` (and `RSpec::Core::Configuration#parallel_workers`) to run
+  top-level example groups across worker processes forked after the suite has loaded.
+  Formatters run in the coordinating process only and receive one coherent stream of
+  notifications with real `Example` objects -- results, timing, pending details,
+  exceptions rebuilt from their class name, message, backtrace and cause chain, messages,
+  deprecations, marshalable custom notifications and the metadata an example set, changed
+  or deleted -- so existing formatters keep working and the run has one seed, one summary,
+  one profile and one `.rspec_status` file. What workers print (also from processes they
+  start, crash reports and `at_exit` handlers) appears with the example group that printed
+  it, as in a serial run. Listeners
+  registered inside a worker, e.g. in a `before(:suite)` hook, still see that worker's
+  example notifications. Workers run the suite hooks once each, expose
+  `RSpec::Core::Configuration#parallel_worker_number` and set `TEST_ENV_NUMBER` the way
+  parallel_tests does. A worker that finishes but does not exit is aborted after
+  `RSpec::Core::Configuration#parallel_shutdown_timeout` seconds with a dump of its
+  threads, so a stuck `at_exit` handler can no longer hang a run (nor can one that runs
+  after code under test called `exit`); neither can a worker stuck in `fork`, even once the
+  coordinating process is killed with SIGKILL. A worker
+  that crashes fails the example it was running instead of taking the run down, while
+  the examples of its group it had not started run in another worker, and a new worker
+  with its `TEST_ENV_NUMBER` takes its place. Code that calls
+  `exit` ends the run with that status, as it does serially. A top-level group tagged
+  `:parallel_split => N` runs as N parts in
+  different workers. A run stopped with SIGTERM or SIGHUP says which example each worker
+  was running and for how long. With `--no-parallel-preload`
+  (`RSpec::Core::Configuration#parallel_preload`) the workers are forked before the spec
+  files are loaded and each loads them itself, so nothing the spec files do while loading
+  is shared with the workers; a worker that does not load the examples the coordinating
+  process has is not used. Where Ruby has no `fork` (Windows, JRuby) the
+  workers are new processes running the same `rspec` command with the run's seed, and load
+  the spec files themselves.
+  `--bisect` runs serially, and the reproduction command it prints now ends with
+  `--no-parallel`.
+  (Illia Zub)
+* Load and filter large suites faster by no longer looking up the working directory once per
+  example and example group, which took seconds on a suite of 150,000 examples, and more when
+  several processes did it at once. (Illia Zub)
+
+Bug Fixes:
+
+* Fix `--bisect` on Windows, which passed its load path to the processes it starts joined
+  with `:` instead of `;`. (Illia Zub)
+
 # 4.0.0.beta1 / 2026-02-18
 
 Breaking Changes:

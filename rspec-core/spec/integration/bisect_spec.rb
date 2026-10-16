@@ -40,6 +40,32 @@ module RSpec::Core
         ])
         expect(output).to include("Bisect complete!", "rspec ./spec/rspec/core/resources/bisect/consistently_ordered_2_specs.rb[1:1] ./spec/rspec/core/resources/bisect/consistently_ordered_3_specs.rb[1:1]")
       end
+
+      it 'returns a reproduction command that runs serially when parallel runs are configured' do
+        output = bisect(%w[
+          --order defined --parallel=2
+          spec/rspec/core/resources/bisect/consistently_ordered_1_specs.rb
+          spec/rspec/core/resources/bisect/consistently_ordered_2_specs.rb
+          spec/rspec/core/resources/bisect/consistently_ordered_3_specs.rb
+          spec/rspec/core/resources/bisect/consistently_ordered_4_specs.rb
+        ])
+        expect(output).to include("Bisect complete!", "consistently_ordered_3_specs.rb[1:1] --order defined --no-parallel")
+        expect(output).not_to include("--parallel=2")
+      end
+
+      it 'leaves the parallel options out of the SPEC_OPTS of the reproduction command, since they would win over it' do
+        output = nil
+        with_env_vars('SPEC_OPTS' => '--parallel=2 --order defined') do
+          output = bisect(%w[
+            spec/rspec/core/resources/bisect/consistently_ordered_1_specs.rb
+            spec/rspec/core/resources/bisect/consistently_ordered_2_specs.rb
+            spec/rspec/core/resources/bisect/consistently_ordered_3_specs.rb
+            spec/rspec/core/resources/bisect/consistently_ordered_4_specs.rb
+          ])
+        end
+        expect(output).to include("Bisect complete!", 'SPEC_OPTS="--order defined" rspec ./spec/rspec/core/resources/bisect/consistently_ordered_2_specs.rb[1:1] ./spec/rspec/core/resources/bisect/consistently_ordered_3_specs.rb[1:1] --no-parallel')
+        expect(output).not_to include("--parallel=2")
+      end
     end
 
     context "when the bisect command saturates the pipe" do

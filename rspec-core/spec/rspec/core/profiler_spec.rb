@@ -39,6 +39,32 @@ RSpec.describe 'RSpec::Core::Profiler' do
       end
     end
 
+    describe '#record_group_duration' do
+      it 'records a duration measured elsewhere, in place of the one observed here' do
+        profiler.example_group_started group_notification group
+        allow(::RSpec::Core::Time).to receive(:now) { now + 1 }
+        profiler.example_group_finished group_notification group
+
+        profiler.record_group_duration(group, 7.5)
+
+        expect(profiler.example_groups[group]).to include(:total_time => 7.5, :description => "My Group")
+      end
+
+      it 'records groups it has not seen start' do
+        profiler.record_group_duration(group, 2.0)
+        expect(profiler.example_groups[group]).to include(:total_time => 2.0, :count => 0)
+      end
+
+      context "when the group is not a top-level group" do
+        let(:group) { super().describe "nested" }
+
+        it 'no-ops since we only consider top-level groups for profiling' do
+          profiler.record_group_duration(group, 2.0)
+          expect(profiler.example_groups).to be_empty
+        end
+      end
+    end
+
     describe '#example_group_finished' do
       before do
         profiler.example_group_started group_notification group

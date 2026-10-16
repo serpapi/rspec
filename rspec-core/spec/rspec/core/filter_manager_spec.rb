@@ -116,6 +116,13 @@ module RSpec::Core
         RSpec.describe("group", *args).example("example")
       end
 
+      it "does not expand each example's path when no location or id filter is set" do
+        examples = Array.new(3) { example_with }
+        expect(File).not_to receive(:expand_path)
+
+        expect(prune(examples)).to eq(examples)
+      end
+
       shared_examples_for "example identification filter preference" do |type|
         it "prefers #{type} filter to exclusion filter" do
           group = RSpec.describe("group")

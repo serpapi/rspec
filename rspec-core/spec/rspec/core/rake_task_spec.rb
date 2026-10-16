@@ -161,7 +161,8 @@ module RSpec::Core
       it "removes the environment variables", :skip => RSpec::Support::Ruby.jruby? do
         with_env_vars 'MY_ENV' => 'ABC' do
           if RSpec::Support::OS.windows?
-            essential_shell_variables = /\["ANSICON", "ANSICON_DEF", "HOME", "TMPDIR", "USER"\]/
+            # ANSICON's variables are there only when it is active in the shell.
+            essential_shell_variables = /\[(?:"ANSICON", "ANSICON_DEF", )?"HOME", "TMPDIR", "USER"\]/
           else
             essential_shell_variables = /\["PWD"(?:, "SHLVL")?(?:, "_")?(?:, "__CF_USER_TEXT_ENCODING")?\]/
           end

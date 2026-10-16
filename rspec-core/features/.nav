@@ -9,6 +9,7 @@
   - line_number_appended_to_path.feature
   - exit_status.feature
   - order.md (`--order` option)
+  - parallel.feature
   - rake_task.feature
 - pending_and_skipped_examples:
   - pending_examples.feature

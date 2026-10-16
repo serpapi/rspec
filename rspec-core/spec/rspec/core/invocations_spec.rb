@@ -83,14 +83,45 @@ module RSpec::Core
         allow(RSpec::Core::Bisect::Coordinator).to receive(:bisect_with).and_return(success)
       end
 
-      it "starts the bisection coordinator" do
+      it "starts the bisection coordinator, with a reproduction command that runs serially" do
         run_invocation
 
         expect(RSpec::Core::Bisect::Coordinator).to have_received(:bisect_with).with(
           an_instance_of(Runner),
-          configuration_options.args,
+          configuration_options.args + ["--no-parallel"],
           an_instance_of(Formatters::BisectProgressFormatter)
         )
+      end
+
+      context "when parallel runs are configured" do
+        let(:original_cli_args) { %w[--bisect --parallel=3 --seed 1234] }
+
+        it "replaces the option in the reproduction command" do
+          run_invocation
+
+          expect(RSpec::Core::Bisect::Coordinator).to have_received(:bisect_with).with(
+            an_instance_of(Runner),
+            %w[--bisect --seed 1234 --no-parallel],
+            an_instance_of(Formatters::BisectProgressFormatter)
+          )
+        end
+      end
+
+      it "takes the parallel options out of SPEC_OPTS, which win over the command line, while it bisects" do
+        during = []
+        allow(RSpec::Core::Bisect::Coordinator).to receive(:bisect_with) do
+          during << ENV.fetch('SPEC_OPTS', nil)
+          success
+        end
+
+        with_env_vars('SPEC_OPTS' => '--parallel=2 --order defined') do
+          run_invocation
+          expect(ENV.fetch('SPEC_OPTS', nil)).to eq('--parallel=2 --order defined')
+        end
+        with_env_vars('SPEC_OPTS' => '--no-parallel --parallel') { run_invocation }
+        with_env_vars('SPEC_OPTS' => '--example "two words" --order defined') { run_invocation }
+
+        expect(during).to eq(['--order defined', nil, '--example "two words" --order defined'])
       end
 
       context "when the bisection is successful" do
@@ -129,7 +160,7 @@ module RSpec::Core
 
           expect(RSpec::Core::Bisect::Coordinator).to have_received(:bisect_with).with(
             an_instance_of(Runner),
-            configuration_options.args,
+            configuration_options.args + ["--no-parallel"],
             an_instance_of(Formatters::BisectDebugFormatter)
           )
         end

@@ -275,6 +275,217 @@ which you'll use to run rspec. The `rspec` command comes with many useful
 options.
 Run `rspec --help` to see the complete list.
 
+## Running Examples in Parallel
+
+`rspec --parallel` runs the top-level example groups of your suite across
+worker processes, one per processor by default (`--parallel=4` for four).
+RSpec loads the suite once, forks the workers from the process that loaded it,
+hands out groups to whichever worker is free -- longest first when a previous
+run recorded timings in the `example_status_persistence_file_path` file -- and
+streams results back as examples finish. Your formatters run only in the
+coordinating process and see the notifications of a normal run, so there is
+one seed, one summary, one profile and one exit code, and `--fail-fast`,
+`--only-failures`, `--next-failure`, `--seed`, filters and `path:line`
+selection keep working. Once the `--fail-fast` limit is reached no further
+groups are handed out and busy workers stop after their current example, so
+examples already running in other workers can still add failures. You can make
+it the default with:
+
+```ruby
+RSpec.configure do |config|
+  config.parallel_workers = :auto # or an Integer
+end
+```
+
+Each worker runs the `before(:suite)` and `after(:suite)` hooks once. Inside a
+worker, `RSpec.configuration.parallel_worker_number` is its 1-based number and
+`ENV['TEST_ENV_NUMBER']` follows the convention of parallel_tests (`""` for the
+first worker, then `"2"`, `"3"`, ...), so anything you already namespace per
+worker for that tool keeps working. Each worker draws from `Kernel.rand` with
+a seed of its own, as forked processes do, so `Kernel.srand config.seed` does
+not make what examples draw reproducible under `--parallel`.
+
+Workers inherit everything that happened while the suite was loaded. For a
+Rails application that means `rails_helper` has already evaluated
+`database.yml` and connected to the database in the coordinating process
+before any worker exists: setting `TEST_ENV_NUMBER` afterwards does **not**
+give workers separate databases, so such Rails suites run under `--parallel`
+share one test database until rspec-rails adds per-worker database support.
+Anything the spec files open while they load -- connections, servers,
+threads -- is inherited by every worker; acquire such resources in
+`before(:suite)` to get one per worker. A database client that connected while
+the spec files loaded (a query at load time is enough) hands the same
+connection to every worker unless it reconnects after `fork` by itself: as with
+app servers that preload, make each worker reconnect in a `before(:suite)`
+hook (with Mongoid, `Mongoid.disconnect_clients`), or have the workers load the
+spec files themselves (below). On macOS, the system networking libraries do not
+survive `fork` well either: when loading the spec files does a lot of work
+(resolving host names, say), workers can crash in `getaddrinfo` or hang.
+
+Or have every worker load the spec files itself: with `--no-parallel-preload`
+(or `config.parallel_preload = false` in a `--require`d file) the workers are
+forked as soon as the `--require`d files are loaded, before the spec files.
+This and the worker count must be known by then: set in a helper that the spec
+files require, they come too late, and the run is serial, with a warning --
+forking after loading is what this setting avoids. There are no more workers
+than spec files (but two for a single file). Each worker then loads the spec
+files with its `TEST_ENV_NUMBER` already set, and the coordinating process
+loads them too, for its reporting. RSpec never calls `srand`, so each worker
+draws from `Kernel.rand` with a seed of its own while loading too, whatever
+the coordinating process seeded it with. Nothing the spec files do while
+loading is shared then -- connections, threads, system libraries they
+initialize -- and helpers they require (rather than `.rspec`) load in every
+worker, so a Rails app whose spec files `require 'rails_helper'` boots in each
+worker with its own `TEST_ENV_NUMBER`. The cost is loading the spec files once
+per process: more CPU and memory, though they load at the same time, and
+whatever they do at load time is done that many times. A worker is given work
+only once it has loaded the examples the coordinating process has (the same
+ids and locations), and what it runs is reported as it described it, so a
+description computed while loading -- from the time or `rand`, say -- is the
+worker's. One that loads other examples, gets a load error the coordinating
+process did not get, or is still loading long after the coordinating process
+finished is not used: that counts as an error outside of examples, and its
+groups run in the other workers -- or, when no worker is left, do not run.
+
+Formatters receive examples with their status, timing, pending details,
+exceptions (class name, message, backtrace, cause chain and aggregated
+failures; rebuilt as a subclass of the original class when that class exists
+in the coordinating process) and the group and example notifications in the
+order the worker produced them, plus `reporter.message`, deprecations and
+custom notifications whose options can be marshaled. What an example, its
+hooks or a worker listener do to the example's metadata -- keys set, changed in
+place or deleted, and the description the matcher of a one-liner like
+`it { is_expected.to eq(5) }` generates -- reaches the coordinating process
+before formatters see the example. RSpec's own keys stay the coordinating
+process's; a value that cannot be marshaled is named in a warning, once per
+key, and formatters see the value it had before the example. Changes to a
+group's metadata are not forwarded.
+
+What workers print -- `puts` in an example, warnings, the output of processes
+they start, a crash report, `at_exit` handlers -- appears on the coordinating
+process's standard output and error with the example group that printed it,
+as in a serial run: workers write it to files in a private temporary
+directory, which the coordinating process reads and then removes. So a
+worker's standard output and error are not terminals (`$stdout.tty?` is
+false), what an example prints appears once the worker next reports (when the
+example finishes, at the latest), and an interactive debugger (`binding.irb`,
+`debug`) needs a serial run. With `--no-parallel-preload`, what workers print
+while they load the spec files is left out: the coordinating process printed
+the same when it loaded them. Listeners registered from
+inside a worker (for example with `reporter.register_listener` in a
+`before(:suite)` hook) are notified of that worker's example and group
+notifications before they are forwarded; run-level notifications (`start`,
+`dump_summary`, `close`, ...) only reach the coordinating process.
+
+A worker that has finished its last example group but does not exit (a
+non-daemon thread, a browser that will not quit, ...) is given
+`config.parallel_shutdown_timeout` seconds (30 by default) to run its
+`after(:suite)` hooks and `at_exit` handlers; after that it dumps the
+backtraces of all its threads to stderr and is aborted, and the run exits
+with `config.error_exit_code`. The coordinator never waits unboundedly for a
+finished worker -- not even one whose watchdog cannot run and that ignores
+SIGTERM: the run waits for it about the shutdown timeout plus 11 seconds at
+most (a second of grace, then 5 seconds after SIGTERM and 5 after SIGKILL).
+A worker that never gets past `fork` (deadlocked in a fork handler, in Ruby or
+in a library) is terminated the same way once it has not reported back within
+the shutdown timeout of being forked, and the group it was given runs in
+another worker.
+
+A worker that crashes or is killed (`exit!`, a segfault, the OOM killer, ...)
+fails the example it was running with the reason, so the example is listed
+under "Failed examples" and picked up by `--only-failures`, and is not run
+again -- whatever it did may be why the worker died; the examples of its group
+it had not started yet run in another worker. One lost in a `before(:context)`
+or `after(:context)` hook fails the examples of that group it had not started,
+as such a hook raising an error would, and the rest of its group runs
+elsewhere. While groups wait to run, a lost worker is replaced by a new one
+with its number and `TEST_ENV_NUMBER` -- not once the run stops early (fail-fast,
+an interrupt, `exit`), not for a worker lost while loading the spec files, and
+no more often than the run has workers; under `--no-parallel-preload` with
+`fork` the new one is a new `rspec` process, as without `fork`, since forking
+the coordinating process after it loaded the spec files is what that setting
+avoids. Workers that run out of work wait for the busy ones, so that there is
+a worker to run what a lost one leaves; if none remains, the run says which
+examples did not run and how to run them. Problems between example groups count
+as errors outside of examples.
+
+RSpec does not rescue `SystemExit`, so in a serial run code that calls `exit`
+(or `abort`) ends the run with that status. Under `--parallel` it ends the run
+the same way: no further examples start, busy workers stop after the example
+they are running, the summary covers what ran and the run exits with the status
+passed to `exit` -- unless a worker then had to be aborted or killed for not
+exiting in time. Which examples ran before that depends on timing. To make such
+an `exit` fail the example instead, rescue `SystemExit` in an `around` hook.
+
+Workers also exit on their own if the
+coordinating process disappears. One that cannot -- stopped, or stuck before
+it runs any of RSpec's code, as a deadlock in a `fork` handler leaves it -- is
+stopped by a small process the run starts before forking its first worker,
+which outlives a coordinating process killed with SIGKILL: it gives the
+workers it was told about a moment to leave, then sends them SIGTERM and 5
+seconds later SIGKILL, and removes their output files. It signals only those
+workers, and only while they are in the run's process group; one forked
+moments before the coordinating process was killed may not have been
+registered yet. SIGTERM or SIGHUP to the coordinating
+process, as `timeout` or a cancelled CI job sends, stops every worker -- even
+one that cannot tear down -- before the process ends the way a serial run
+would, and the output says which example each worker was running and for how
+long, which is usually why the run had to be stopped; a signal the run was
+started ignoring (`nohup`), or that your suite installs a handler for, is left
+alone. Time the whole run spends stopped (Ctrl-Z) or the machine asleep does
+not count towards these timeouts.
+
+A run is never shorter than its longest top-level example group, which a
+single worker runs. `--profile` shows the slowest groups; tag one whose
+examples can run at the same time in different processes with the number of
+parts to run it as, and workers take the parts like any other group:
+
+```ruby
+RSpec.describe Pricing, :parallel_split => 4 do
+  # ...
+end
+```
+
+Each part is a slice of the order the group's examples run in, of about the
+same total run time when a previous run recorded run times in the
+`example_status_persistence_file_path` file (of the same number of examples
+otherwise), and runs as `rspec spec/pricing_spec.rb[1:2,1:3]` would:
+`before(:context)` and `after(:context)` hooks run once per part, so a group
+that sets up something expensive or shared in them may be better left whole.
+There are no more parts than examples, the number of parts does not depend on
+the machine, and a group whose examples (or those of a group in it) use a
+custom ordering is not split, with a warning. With a formatter that follows
+example groups (documentation, HTML), each part reads as a block of its own,
+under the group's description; `--profile` adds up the parts.
+
+Where Ruby has no `fork` (Windows, JRuby), the workers are new
+processes running the `rspec` command the run was started with -- the same
+arguments, `.rspec` files and `SPEC_OPTS`, without the formatters, and the
+run's seed -- and each loads the spec files itself, as with
+`--no-parallel-preload`. Their jobs and results travel over their standard
+input and output, so what they print goes through the coordinating process
+as described above. Configuration done in-process before
+`RSpec::Core::Runner.run` cannot reach such workers, so there a run that was
+not started by the `rspec` command runs serially, with a warning. Each worker
+starts its own Ruby (seconds on JRuby), and on Windows workers that have to
+be stopped get SIGKILL, which is all Windows can send. When `TEST_ENV_NUMBER`
+is already set because another tool is running RSpec in parallel, RSpec
+prints a warning and runs serially. When the system refuses a worker -- too many open
+files or processes -- the run goes on with the workers it got, and serially if
+it got none, with a warning. `--bisect` and `--dry-run` always run serially,
+and the reproduction command `--bisect` prints includes `--no-parallel`, which
+(like `--parallel=0`) overrides `--parallel` in `.rspec` and
+`config.parallel_workers` in a helper, and leaves `--parallel` out of its
+`SPEC_OPTS`.
+
+Each worker is a separate process, so a coverage tool records only the
+coordinating process unless it merges forked processes. With SimpleCov, set
+`merge_subprocesses true` in the `SimpleCov.start` block (SimpleCov 1.3; it
+was `enable_for_subprocesses` before): rspec-core's own suite then measures
+the same coverage with `--parallel=8`, preloaded or not, as it does serially.
+Workers started as new processes (no `fork`) start SimpleCov from your spec
+helper themselves, and SimpleCov 1.3.2 merges their results.
+
 ## Store Command Line Options `.rspec`
 
 You can store command line options in a `.rspec` file in the project's root

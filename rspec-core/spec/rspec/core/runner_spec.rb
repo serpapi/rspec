@@ -1,4 +1,5 @@
 require 'rspec/core/drb'
+require 'rspec/core/parallel/coordinator'
 require 'support/runner_support'
 
 module RSpec::Core
@@ -296,6 +297,37 @@ module RSpec::Core
         expect(runner).to receive(:exit).with(123)
         runner.invoke
       end
+
+      context "remembering the script and arguments it runs, which a parallel run without `fork` starts its workers with" do
+        before do
+          allow(runner).to receive(:run) { 0 }
+          stub_const("ARGV", %w[--tag fast])
+          allow(File).to receive(:file?).and_call_original
+        end
+
+        after { runner.instance_variable_set(:@command_line, nil) }
+
+        it "takes the script that started the process" do
+          allow(File).to receive(:file?).with($0).and_return(true)
+          runner.invoke
+          expect(runner.command_line).to eq([File.expand_path($0), %w[--tag fast]])
+        end
+
+        it "takes rspec-core's `rspec` when no script started it (`ruby -e`)" do
+          allow(File).to receive(:file?).with($0).and_return(false)
+          runner.invoke
+          expect(runner.command_line).to eq([RSpec::Core.path_to_executable, %w[--tag fast]])
+        end
+      end
+
+      it "runs as the parallel worker a coordinator without `fork` started it as" do
+        RSpec::Support.require_rspec_core "parallel/coordinator"
+        stub_const("ARGV", %w[--tag fast])
+        expect(RSpec::Core::Parallel::SpawnedWorker).to receive(:run).with(%w[--tag fast]) { throw :exited }
+        expect(runner).not_to receive(:run)
+
+        with_env_vars('RSPEC_PARALLEL_WORKER' => '2') { catch(:exited) { runner.invoke } }
+      end
     end
 
     describe ".run" do
@@ -363,6 +395,76 @@ module RSpec::Core
       end
 
       describe "#run" do
+        it 'hands the ordered example groups to a parallel coordinator when one applies, then persists example statuses' do
+          allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(true)
+          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+          RSpec.describe("group 2") { example("passing") { expect(1).to eq(1) } }
+          allow(config).to receive(:load_spec_files)
+          config.parallel_workers = 2
+          coordinator = instance_double(Parallel::Coordinator, :run => 17)
+          expect(Parallel).to receive(:coordinator_for).with(an_instance_of(Runner), world.ordered_example_groups).and_return(coordinator)
+          config.example_status_persistence_file_path = "statuses.txt"
+          expect(ExampleStatusPersister).to receive(:persist).with(world.all_examples, "statuses.txt")
+
+          runner = Runner.new(ConfigurationOptions.new([]), config, world)
+          expect(runner).not_to receive(:run_specs)
+
+          expect(runner.run(err, out)).to eq(17)
+        end
+
+        it 'plans no parallel run unless one is configured' do
+          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+          allow(config).to receive(:load_spec_files)
+          expect(Parallel::Plan).not_to receive(:new)
+
+          expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
+        end
+
+        it 'plans a parallel run that the spec files configure, once they have loaded' do
+          allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(true)
+          RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+          allow(config).to receive(:load_spec_files) { config.parallel_workers = 2 }
+          expect(Parallel).to receive(:coordinator_for).and_return(nil)
+
+          expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
+        end
+
+        context 'with a parallel plan' do
+          let(:plan) { instance_double(Parallel::Plan, :before_loading => nil, :dismiss => nil) }
+
+          before do
+            config.parallel_workers = 2
+            allow(Parallel::Plan).to receive(:new).and_return(plan)
+          end
+
+          it 'lets it fork workers before the spec files load, then hands it the groups, and dismisses what it did not use' do
+            RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
+            coordinator = instance_double(Parallel::Coordinator, :run => 0)
+            expect(plan).to receive(:before_loading).ordered
+            expect(config).to receive(:load_spec_files).ordered
+            expect(plan).to receive(:coordinator_for).with(world.ordered_example_groups).ordered.and_return(coordinator)
+            expect(plan).to receive(:dismiss).ordered
+
+            expect(Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)).to eq(0)
+          end
+
+          it 'dismisses the workers it forked when the run ends early' do
+            allow(config).to receive(:load_spec_files) { world.wants_to_quit = true }
+            expect(plan).not_to receive(:coordinator_for)
+
+            Runner.new(ConfigurationOptions.new([]), config, world).run(err, out)
+
+            expect(plan).to have_received(:dismiss)
+          end
+
+          it 'dismisses the workers it forked when loading raises' do
+            allow(config).to receive(:load_spec_files).and_raise(SystemExit)
+
+            expect { Runner.new(ConfigurationOptions.new([]), config, world).run(err, out) }.to raise_error(SystemExit)
+            expect(plan).to have_received(:dismiss)
+          end
+        end
+
         it 'supports a test-queue like subclass that can perform setup once and run different sets of example groups multiple times' do
           order = []
 
