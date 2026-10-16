@@ -931,6 +931,40 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     end
   end
 
+  it 'stops workers that cannot notice the coordinating process is gone once it is killed, and removes their files' do
+    write_file_formatted 'spec/stopped_spec.rb', "
+      RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }
+      RSpec.describe('One') { it('stops itself') { Process.kill(:STOP, Process.pid) } }
+      RSpec.describe('Two') { it('stops itself') { Process.kill(:STOP, Process.pid) } }
+    "
+    wait_until = lambda do |seconds, &condition|
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+      sleep 0.05 until condition.call || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      condition.call
+    end
+    state = lambda { |pid| `ps -o stat= -p #{pid}`.strip }
+    # A stopped worker runs none of its code -- like one deadlocked in a fork
+    # handler -- and keeps every descriptor it inherited.
+    stopped = lambda { |pid| state.call(pid).start_with?('T') }
+    running = lambda { |pid| !state.call(pid).empty? && !state.call(pid).start_with?('Z') }
+
+    cd('.') do
+      Dir.mkdir('tmp')
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil, 'TMPDIR' => File.expand_path('tmp') }, *rspec, '--parallel=2',
+                          'spec/stopped_spec.rb', :out => File::NULL, :err => 'stderr.txt')
+      expect(wait_until.call(20) { worker_pids.size == 2 && worker_pids.all?(&stopped) }).to be true
+      workers = worker_pids
+
+      Process.kill(:KILL, pid)
+      Process.wait(pid)
+
+      expect(wait_until.call(15) { workers.none?(&running) }).to be true
+      expect(File.read('stderr.txt')).to include("ended without stopping its workers; stopped 2 still running")
+      expect(wait_until.call(5) { Dir['tmp/*'].empty? }).to be true
+    end
+  end
+
   it 'stops workers stuck in an example once the coordinating process is gone' do
     write_file_formatted 'spec/stuck_spec.rb', "
       RSpec.configure { |c| c.before(:suite) { File.write(\"worker_\#{RSpec.configuration.parallel_worker_number}.pid\", Process.pid.to_s) } }

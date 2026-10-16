@@ -41,10 +41,16 @@ module RSpec
           live = live_workers
           live.each { |worker| dismiss_worker(worker) }
           give_up_unless_gone(live, @kill_grace)
-          WorkerOutput.remove_directory(@output_dir)
+          clean_up
         end
 
       private
+        # Whatever stopping the workers did, also when it failed.
+        def clean_up
+          Parallel.restore_signals(@signal_handlers)
+          WorkerOutput.remove_directory(@output_dir)
+          @reaper&.finish
+        end
 
         # Rather than a `waitpid` for every worker on every wake-up of the
         # loop, which comes every few frames while results stream in.
@@ -81,6 +87,8 @@ module RSpec
           # Shares more memory with forked workers; spawned ones share none.
           @process.warmup if @process.respond_to?(:warmup) && !Parallel.spawning?
           @output_dir ||= WorkerOutput.make_directory
+          # Spawned workers watch the coordinator's pid themselves.
+          @reaper ||= @reaper_class&.start(@output_dir) unless Parallel.spawning?
 
           @worker_count.times do |index|
             break unless start_worker(index + 1, units)
@@ -93,6 +101,7 @@ module RSpec
           worker.loading = units.nil?
           @workers << worker
           worker.pid = starter.call(worker, @workers)
+          @reaper&.watch(worker.pid)
           worker.close_child_ends
           worker.starting = true
           # A worker forked before loading gets the loading deadline instead.

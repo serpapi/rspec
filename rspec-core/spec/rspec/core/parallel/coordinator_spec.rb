@@ -267,7 +267,7 @@ module RSpec::Core::Parallel
       units.each { |group| group.include(WithoutMocksLifecycle) }
       @units = units
       @process = options.fetch(:process, process)
-      Coordinator.new(runner, worker_count, { :process => @process, :spawn => method(:spawn), :tick => 0.01,
+      Coordinator.new(runner, worker_count, { :process => @process, :spawn => method(:spawn), :tick => 0.01, :reaper => nil,
                                               :term_grace => 5, :kill_grace => 5, :watchdog_grace => 0.05 }.merge(options))
     end
 

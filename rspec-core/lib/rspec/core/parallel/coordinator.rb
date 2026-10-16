@@ -8,6 +8,7 @@ RSpec::Support.require_rspec_core "parallel/sequencer"
 RSpec::Support.require_rspec_core "parallel/results"
 RSpec::Support.require_rspec_core "parallel/suite_index"
 RSpec::Support.require_rspec_core "parallel/worker_output"
+RSpec::Support.require_rspec_core "parallel/reaper"
 RSpec::Support.require_rspec_core "parallel/worker_handle"
 RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
 RSpec::Support.require_rspec_core "parallel/worker_exits"
@@ -52,6 +53,8 @@ module RSpec
           @term_grace = options.fetch(:term_grace, TERM_GRACE)
           @kill_grace = options.fetch(:kill_grace, KILL_GRACE)
           @watchdog_grace = options.fetch(:watchdog_grace, WATCHDOG_GRACE)
+          @reaper_class = options.fetch(:reaper) { Reaper }
+          @reaper = nil
           @workers = []
           @results = Results.new
           @quitting = false
@@ -114,8 +117,7 @@ module RSpec
           begin
             terminate_remaining_workers
           ensure
-            Parallel.restore_signals(@signal_handlers)
-            WorkerOutput.remove_directory(@output_dir)
+            clean_up
           end
         end
 
@@ -398,6 +400,7 @@ module RSpec
             worker.exit_status = status
             judge_exit(worker, status)
             worker.state = :exited
+            @reaper&.forget(worker.pid)
             replace(worker)
           end
         end
