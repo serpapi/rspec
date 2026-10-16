@@ -966,9 +966,11 @@ module RSpec::Core::Parallel
 
     it "starts a worker with the lost one's number in its place, which runs the remaining groups" do
       crashing = RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }
+      # Still running when the crash is noticed, so that groups wait to run.
+      slow = %w[A B C].map { |name| RSpec.describe(name) { it("passes") { sleep 0.5 } } }
       config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
 
-      exit_code = coordinator([crashing, passing_group("A"), passing_group("B"), passing_group("C")]).run
+      exit_code = coordinator([crashing] + slow).run
 
       expect(exit_code).to eq(config.failure_exit_code)
       expect(@started_numbers.sort).to eq([1, 1, 2])
