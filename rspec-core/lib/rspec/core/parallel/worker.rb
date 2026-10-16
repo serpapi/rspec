@@ -37,6 +37,7 @@ module RSpec
           @ppid = options.fetch(:ppid) { Process.method(:ppid) }
           @watch_coordinator = options.fetch(:watch_coordinator, true)
           @signal_handlers = options.fetch(:signal_handlers, {})
+          @output = options[:output]
         end
 
         # @return [String] the `TEST_ENV_NUMBER` value for this worker, following
@@ -48,6 +49,7 @@ module RSpec
 
         # Never returns: ends the process when the coordinator has no more work.
         def run
+          capture_output
           # First, so the coordinator knows it got past `fork`.
           @results.send([:started])
           watch_coordinator if @watch_coordinator
@@ -61,6 +63,17 @@ module RSpec
           @exit_now.call(1)
         end
 
+        # @private
+        def capture_output
+          return unless @output
+
+          # For when there is no coordinator left to show the files.
+          @direct_stderr = STDERR.dup
+          @results = WorkerOutput::Capture.new(@output, @results)
+        rescue SystemCallError, IOError
+          nil # it writes where the run does
+        end
+
         # A worker notices that the coordinator is gone when it next reports
         # to it -- which a worker stuck in a long example does not do. Its
         # parent changes when the coordinator dies, so it does not outlive the
@@ -70,12 +83,15 @@ module RSpec
           coordinator = @ppid.call
           thread = Thread.new do
             sleep COORDINATOR_POLL while @ppid.call == coordinator
+            stderr = @stderr || @direct_stderr || $stderr
             begin
-              (@stderr || $stderr).puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) is exiting because the " \
-                                        "coordinating process (pid #{coordinator}) is gone."
+              stderr.puts "\nRSpec parallel worker #{@number} (pid #{Process.pid}) is exiting because the " \
+                          "coordinating process (pid #{coordinator}) is gone."
             rescue IOError, SystemCallError
               nil
             end
+            # The coordinator would have removed them.
+            WorkerOutput.remove_directory(File.dirname(@output[:out])) if @output
             @exit_now.call(1)
           end
           thread.report_on_exception = false

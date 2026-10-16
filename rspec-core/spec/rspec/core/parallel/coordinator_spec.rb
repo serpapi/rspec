@@ -124,8 +124,10 @@ module RSpec::Core::Parallel
         when :never_loads, :never_starts, :starts_once_asked_to_quit then stall(behaviour, handle, results)
         when :dies_loading   then Thread.current.kill
         else
+          print_while_loading(handle, results) if behaviour == :prints_while_loading
+          print_to(handle, results, "loaded quietly\n", "", false) if behaviour == :prints_unannounced_while_loading
           report_loaded(results, behaviour) if handle.loading
-          send_extra_frames(results, behaviour)
+          send_extra_frames(results, behaviour, handle)
           run_fake_worker(handle.number, jobs, results, behaviour) { |status| exit_status = status }
         end
       ensure
@@ -189,9 +191,23 @@ module RSpec::Core::Parallel
       results.send([:loaded, digest, failure])
     end
 
-    def send_extra_frames(results, behaviour)
+    def send_extra_frames(results, behaviour, handle)
       send_unknown_ids(results) if behaviour == :unknown_ids
       results.send([:expectations, 3]) if behaviour == :counts_expectations
+      print_to(handle, results, "printed by worker #{handle.number}\n", "warned by worker #{handle.number}\n") if behaviour == :prints
+      print_to(handle, results, "left behind by worker #{handle.number}\n", "", false) if behaviour == :prints_unannounced
+    end
+
+    # As a worker's own output goes to the files once it has moved its
+    # standard output and error there; the frame is what it sends next.
+    def print_to(handle, results, out, err, announce=true)
+      File.open(handle.output.paths[:out], 'ab') { |file| file.write(out) }
+      File.open(handle.output.paths[:err], 'ab') { |file| file.write(err) }
+      results.send([:output, handle.output.paths.transform_values { |path| File.size(path) }]) if announce
+    end
+
+    def print_while_loading(handle, results)
+      print_to(handle, results, "noise while loading\n", "")
     end
 
     def send_unknown_ids(results)
@@ -835,6 +851,63 @@ module RSpec::Core::Parallel
       expect(exit_code).to eq(0)
       expect(messages).not_to include("unexpected")
       expect(messages).to include("2 examples, 0 failures")
+    end
+
+    it "shows what workers printed, where they reported it, and what they left unannounced once they are gone" do
+      worker_behaviours[1] = :prints
+      worker_behaviours[2] = :prints_unannounced
+      exit_code = nil
+
+      stdout, stderr = standard_streams { exit_code = coordinator([passing_group("A"), passing_group("B")]).run }
+
+      expect(exit_code).to eq(0)
+      expect(stdout).to include("printed by worker 1\n", "left behind by worker 2\n")
+      expect(stderr).to eq("warned by worker 1\n")
+    end
+
+    it "does not show what a worker that loaded the spec files itself printed while it did" do
+      worker_behaviours[1] = :prints_while_loading
+      instance = started_coordinator([passing_group("A"), passing_group("B")])
+      instance.assign(@units, units_of(@units))
+
+      exit_code = nil
+      stdout, _stderr = standard_streams { exit_code = instance.run }
+
+      expect(exit_code).to eq(0)
+      expect(stdout).to eq("")
+    end
+
+    it "does not show what a worker dismissed before the run used it left in its files" do
+      worker_behaviours[3] = :prints_unannounced_while_loading
+      instance = started_coordinator([passing_group("A"), passing_group("B")], 3)
+      instance.assign(@units, units_of(@units))
+
+      exit_code = nil
+      stdout, _stderr = standard_streams { exit_code = instance.run }
+
+      expect(exit_code).to eq(0)
+      expect(stdout).to eq("")
+    end
+
+    it "goes on when it cannot show what a worker printed" do
+      worker_behaviours[1] = :prints
+      exit_code = nil
+
+      standard_streams(StringIO.new.tap(&:close_write)) { exit_code = coordinator([passing_group("A"), passing_group("B")]).run }
+
+      expect(exit_code).to eq(0)
+      expect(messages).to include("2 examples, 0 failures")
+    end
+
+    # What the coordinator writes to them; the formatters write to `output`.
+    def standard_streams(stdout=StringIO.new)
+      streams = [$stdout, $stderr]
+      $stdout = stdout
+      $stderr = StringIO.new
+      yield
+      [$stdout.string, $stderr.string]
+    ensure
+      $stdout, $stderr = streams
     end
 
     it "reports the groups that never ran when no worker remains" do

@@ -16,9 +16,12 @@ module RSpec
         attr_accessor :loading
         # Forked, and has not sent anything yet.
         attr_accessor :starting
+        # Its standard output and error, or `nil` when it writes where the run does.
+        attr_reader :output
 
-        def initialize(number)
+        def initialize(number, output_dir=nil)
           @number = number
+          @output = output_dir && WorkerOutput.new(output_dir, number)
           @child_jobs, @jobs = Channel.pipe
           begin
             @results, @child_results = Channel.pipe
@@ -98,7 +101,8 @@ module RSpec
             # :nocov: - runs in the forked worker process, covered by integration specs
             handles.each { |other| other.close_all unless other.equal?(self) }
             close_parent_ends
-            Worker.new(@number, units, @child_jobs, @child_results, worker_options).run
+            Worker.new(@number, units, @child_jobs, @child_results,
+                       worker_options.merge(:output => @output && @output.paths)).run
             # :nocov:
           end
         end

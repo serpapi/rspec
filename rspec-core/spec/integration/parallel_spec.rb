@@ -21,6 +21,20 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     run_command(cmd)
   end
 
+  # A process of its own, where the `--require`d files load afresh. Given at
+  # most 60 seconds.
+  def rspec_process(*args)
+    cd('.') do
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
+      sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
+                       Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      Process.kill(:KILL, pid) && Process.wait(pid) unless status
+      [status, File.read('stdout.txt'), File.read('stderr.txt')]
+    end
+  end
+
   # Written by the workers' `before(:suite)` hooks: a file can exist before
   # its pid has been written to it.
   def worker_pids
@@ -313,6 +327,49 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     expect(parallel).to eq(serial.map { |line| line.sub(/ Proc$/, ' NilClass') })
     expect(last_cmd_stderr.scan(/set example metadata :callback to a Proc/).size).to eq(1)
     expect(last_cmd_exit_status).to eq(0)
+  end
+
+  it 'shows what workers print with the example group that printed it, as a serial run does' do
+    write_file_formatted 'spec/support/at_exit.rb', "
+      RSpec.configure { |c| c.after(:suite) { at_exit { puts \"at_exit of worker \#{c.parallel_worker_number}\" } } }
+    "
+    3.times do |i|
+      write_file_formatted "spec/p#{i}_spec.rb", "
+        puts 'loading p#{i}'
+        RSpec.describe('P#{i}') do
+          it('prints') do
+            puts 'stdout of P#{i}'
+            warn 'stderr of P#{i}'
+            system('echo subprocess of P#{i}')
+          end
+          it('is quiet') { }
+        end
+      "
+    end
+    write_file_formatted 'spec/killed_spec.rb', "
+      RSpec.describe('Killed') do
+        it('says goodbye') { $stderr.puts 'last words'; Process.kill(:KILL, Process.pid) }
+      end
+    "
+    options = %w[--require ./spec/support/at_exit --format documentation --order defined --parallel=2]
+
+    status, stdout, stderr = rspec_process(*options)
+    blocks = stdout.split(/^(?=P\d$)/).select { |block| block =~ /\AP\d$/ }
+    expect(blocks.size).to eq(3)
+    blocks.each do |block|
+      name = block[/\AP\d/]
+      expect(block).to start_with("#{name}\nstdout of #{name}\nsubprocess of #{name}\n  prints\n  is quiet\n")
+    end
+    # The worker killed with SIGKILL runs no `at_exit` handler.
+    expect(stdout.scan(/^at_exit of worker \d$/)).not_to be_empty
+    expect(stderr).to include("stderr of P0\n", "stderr of P1\n", "stderr of P2\n", "last words\n")
+    expect(stdout).to include("7 examples, 1 failure")
+    expect(status.exitstatus).to eq(1)
+
+    status, stdout, _stderr = rspec_process(*options, '--no-parallel-preload', *%w[spec/p0_spec.rb spec/p1_spec.rb spec/p2_spec.rb])
+    expect(stdout.scan(/^loading p\d$/)).to eq(["loading p0", "loading p1", "loading p2"])
+    expect(stdout).to include("6 examples, 0 failures")
+    expect(status.exitstatus).to eq(0)
   end
 
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
@@ -866,15 +923,20 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
 
     cd('.') do
       rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
-      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, '--parallel=2', 'spec/stuck_spec.rb', :out => File::NULL, :err => 'stderr.txt')
+      Dir.mkdir('tmp')
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil, 'TMPDIR' => File.expand_path('tmp') }, *rspec, '--parallel=2',
+                          'spec/stuck_spec.rb', :out => File::NULL, :err => 'stderr.txt')
       expect(wait_until.call(20) { worker_pids.size == 2 }).to be true
       workers = worker_pids
+      expect(Dir['tmp/rspec-parallel-*'].size).to eq(1)
 
       Process.kill(:KILL, pid)
       Process.wait(pid)
 
       expect(wait_until.call(10) { workers.none?(&running) }).to be true
       expect(File.read('stderr.txt').scan("is exiting because the coordinating process (pid #{pid}) is gone").size).to eq(2)
+      # Where the workers' output went, which the coordinator would have removed.
+      expect(Dir['tmp/*']).to eq([])
     end
   end
 
@@ -1039,20 +1101,6 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
 
     def loaders
       cd('.') { Dir['loaded_*'].map { |file| file.split('_', 4).last }.tally }
-    end
-
-    # A process of its own, where the `--require`d files load afresh. Given at
-    # most 60 seconds.
-    def rspec_process(*args)
-      cd('.') do
-        rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
-        pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
-        sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
-                         Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-        Process.kill(:KILL, pid) && Process.wait(pid) unless status
-        [status, File.read('stdout.txt'), File.read('stderr.txt')]
-      end
     end
 
     it 'has every worker load the spec files itself, once TEST_ENV_NUMBER is set, and run what it loaded' do

@@ -8,10 +8,11 @@ Enhancements:
   Formatters run in the coordinating process only and receive one coherent stream of
   notifications with real `Example` objects -- results, timing, pending details,
   exceptions rebuilt from their class name, message, backtrace and cause chain, messages,
-  deprecations and marshalable custom notifications (of the metadata changed while an
-  example runs only its description, as a one-liner generates it, `:extra_failure_lines`,
-  `:pending` and `:skip` are forwarded) -- so existing formatters keep working and the run
-  has one seed, one summary, one profile and one `.rspec_status` file. Listeners
+  deprecations, marshalable custom notifications and the metadata an example set, changed
+  or deleted -- so existing formatters keep working and the run has one seed, one summary,
+  one profile and one `.rspec_status` file. What workers print (also from processes they
+  start, crash reports and `at_exit` handlers) appears with the example group that printed
+  it, as in a serial run. Listeners
   registered inside a worker, e.g. in a `before(:suite)` hook, still see that worker's
   example notifications. Workers run the suite hooks once each, expose
   `RSpec::Core::Configuration#parallel_worker_number` and set `TEST_ENV_NUMBER` the way

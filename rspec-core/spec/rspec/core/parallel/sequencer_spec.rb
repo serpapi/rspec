@@ -51,7 +51,9 @@ module RSpec::Core::Parallel
 
     def sequencer(sequenced)
       reporter.register_listener(listener, *RSpec::Core::Reporter::RSPEC_NOTIFICATIONS, :my_event)
-      Sequencer.new(reporter, :apply_result => lambda { |example| applied << example }, :clock => clock, :sequenced => sequenced)
+      Sequencer.new(reporter, :apply_result => lambda { |example| applied << example }, :clock => clock,
+                    :sequenced => sequenced,
+                    :output => lambda { |stream, bytes| listener.events << [:output, "#{stream}:#{bytes}"] })
     end
 
     def run_example(seq, worker, example, status=:passed)
@@ -302,6 +304,52 @@ module RSpec::Core::Parallel
         seq.example_started(2, ex(g2, "c"), 30)
 
         expect(seq.stats).to include(:queued => 2, :queued_bytes => 50, :peak_queued_bytes => 50)
+      end
+    end
+
+    describe "#output" do
+      it "shows what a worker printed in a group with that group, queued with it while another group is live" do
+        seq = sequencer(true)
+        seq.group_started(1, g1)
+        seq.group_started(2, g2)
+        seq.output(2, :out, "printed in G2")
+        run_example(seq, 2, ex(g2, "c"))
+        seq.output(2, :err, "warned in G2")
+        seq.group_finished(2, g2, 0.1)
+        expect(events).to eq([[:example_group_started, "G1"]])
+        expect(seq.stats[:queued_bytes]).to eq("printed in G2".bytesize + "warned in G2".bytesize)
+
+        seq.group_finished(1, g1, 0.1)
+
+        expect(events).to eq([
+          [:example_group_started, "G1"], [:example_group_finished, "G1"],
+          [:example_group_started, "G2"], [:output, "out:printed in G2"],
+          [:example_started, "c"], [:example_finished, "c"], [:example_passed, "c"],
+          [:output, "err:warned in G2"], [:example_group_finished, "G2"]
+        ])
+      end
+
+      it "re-opens the group output was printed in when another group was shown since" do
+        seq = sequencer(false)
+        seq.group_started(1, g1)
+        seq.group_started(2, g2)
+
+        seq.output(1, :out, "printed in G1")
+
+        expect(events).to eq([
+          [:example_group_started, "G1"], [:example_group_finished, "G1"],
+          [:example_group_started, "G2"], [:example_group_finished, "G2"],
+          [:example_group_started, "G1"], [:output, "out:printed in G1"]
+        ])
+      end
+
+      it "writes what a worker printed outside any group as it comes, without touching the groups shown" do
+        seq = sequencer(true)
+        seq.group_started(1, g1)
+
+        seq.output(2, :out, "from before(:suite)")
+
+        expect(events).to eq([[:example_group_started, "G1"], [:output, "out:from before(:suite)"]])
       end
     end
 

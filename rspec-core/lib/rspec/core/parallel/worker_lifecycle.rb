@@ -38,6 +38,7 @@ module RSpec
           live = live_workers
           live.each { |worker| dismiss_worker(worker) }
           give_up_unless_gone(live, @kill_grace)
+          WorkerOutput.remove_directory(@output_dir)
         end
 
       private
@@ -75,6 +76,7 @@ module RSpec
         def start_workers(units)
           Parallel.flush_output(@configuration)
           @process.warmup if @process.respond_to?(:warmup)
+          @output_dir ||= WorkerOutput.make_directory
 
           @worker_count.times do |index|
             break unless start_worker(index + 1, units)
@@ -83,7 +85,7 @@ module RSpec
 
         # @return [Boolean] whether the worker started
         def start_worker(number, units)
-          worker = WorkerHandle.new(number)
+          worker = WorkerHandle.new(number, @output_dir)
           worker.loading = units.nil?
           @workers << worker
           worker.pid = @spawn.call(worker, @workers)
@@ -174,6 +176,7 @@ module RSpec
           wait_for_exit(workers, grace)
           workers.reject(&:done?).each do |worker|
             report "#{worker.description} survived SIGKILL; giving up on it."
+            drain_output(worker)
             abort_unit(worker)
             worker.state = :abandoned
           end

@@ -6,6 +6,7 @@ RSpec::Support.require_rspec_core "parallel/worker"
 RSpec::Support.require_rspec_core "parallel/sequencer"
 RSpec::Support.require_rspec_core "parallel/results"
 RSpec::Support.require_rspec_core "parallel/suite_index"
+RSpec::Support.require_rspec_core "parallel/worker_output"
 RSpec::Support.require_rspec_core "parallel/worker_handle"
 RSpec::Support.require_rspec_core "parallel/worker_lifecycle"
 RSpec::Support.require_rspec_core "parallel/worker_exits"
@@ -59,6 +60,7 @@ module RSpec
           @reap_due = true
           @next_reap_at = 0.0
           @last_turn_at = nil
+          @output_dir = nil
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -80,7 +82,7 @@ module RSpec
           return run_serially if @workers.empty?
 
           passed = reporter.report(@world.example_count(@example_groups)) do
-            @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result))
+            @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result), :output => method(:write_output))
 
             begin
               @last_turn_at = now
@@ -107,6 +109,7 @@ module RSpec
         ensure
           terminate_remaining_workers
           Parallel.restore_signals(@signal_handlers)
+          WorkerOutput.remove_directory(@output_dir)
         end
 
       private
@@ -206,6 +209,7 @@ module RSpec
           when :exiting             then exiting(worker, *rest)
           when :loaded              then loaded(worker, *rest)
           when :expectations        then expectations(*rest)
+          when :output              then output(worker, *rest)
           when :started             then nil
           else report "#{worker.description} sent an unexpected #{kind.inspect} frame, which was ignored."
           end
@@ -219,6 +223,45 @@ module RSpec
           return unless reporter.respond_to?(:increment_expectation_count)
 
           count.times { reporter.increment_expectation_count }
+        end
+
+        # What a worker that loaded the spec files itself printed while it
+        # did is what this process printed when it loaded them.
+        def output(worker, sizes)
+          return unless worker.output
+          return worker.output.skip(sizes) if worker.loading
+
+          worker.output.read(sizes) { |stream, bytes| show_output(worker, stream, bytes) }
+        end
+
+        # What is left in a worker's output files once it has gone: what it
+        # printed after it last reported, such as a crash report or what its
+        # `at_exit` handlers printed.
+        def drain_output(worker)
+          return unless worker.output
+
+          worker.output.read { |stream, bytes| show_output(worker, stream, bytes) }
+          worker.output.close
+        end
+
+        # A worker dismissed before the run used it has only loaded the spec
+        # files, which this process did too; before the run reports, no
+        # worker has run anything.
+        def show_output(worker, stream, bytes)
+          return if worker.state == :dismissed || @sequencer.nil?
+
+          @sequencer.output(worker.number, stream, bytes)
+        end
+
+        def write_output(stream, bytes)
+          io = stream == :err ? $stderr : $stdout
+          # What formatters printed before it comes first.
+          $stdout.flush if stream == :err
+          bytes = bytes.gsub("\r\n".b, "\n".b) if RSpec::Support::OS.windows? && !io.binmode?
+          io.write(bytes)
+          io.flush
+        rescue IOError, SystemCallError
+          nil
         end
 
         # Anything it sends shows it got past forking and runs RSpec's code.
@@ -389,6 +432,7 @@ module RSpec
             next unless pid
 
             receive_from(worker)
+            drain_output(worker)
             worker.exit_status = status
             judge_exit(worker, status)
             worker.state = :exited
@@ -415,6 +459,7 @@ module RSpec
             worker.signal(@process, 'KILL', :kill, now + @kill_grace)
           when :kill
             report "#{worker.description} is still alive #{Parallel.seconds(@kill_grace)} after SIGKILL; giving up on it."
+            drain_output(worker)
             abort_unit(worker)
             worker.state = :abandoned
           end

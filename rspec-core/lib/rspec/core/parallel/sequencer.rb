@@ -32,6 +32,8 @@ module RSpec
         QUEUE_BOUND = 5_000
         QUEUE_BYTES_BOUND = 8 * 1024 * 1024
         CONTEXT_FREE = [:message, :deprecation, :custom].freeze
+        # Shown under the groups it was printed in; outside any, as it comes.
+        OUTSIDE_GROUPS = (CONTEXT_FREE + [:output]).freeze
 
         Event = Struct.new(:kind, :target, :payload, :bytes)
 
@@ -56,6 +58,7 @@ module RSpec
         def initialize(reporter, options={})
           @reporter = reporter
           @apply_result = options.fetch(:apply_result)
+          @write_output = options.fetch(:output) { lambda { |_stream, _bytes| } }
           @clock = options.fetch(:clock) { Parallel.method(:monotonic_time) }
           @sequenced = options.fetch(:sequenced) { self.class.group_aware_listeners?(reporter) }
           @streams = {}
@@ -117,6 +120,11 @@ module RSpec
           push(worker, Event.new(:custom, event, options, bytes))
         end
 
+        # What the worker printed to `stream` (`:out` or `:err`).
+        def output(worker, stream, bytes)
+          push(worker, Event.new(:output, stream, bytes, bytes.bytesize))
+        end
+
         # The worker died (or was stopped) in the middle of a group: deliver
         # what it reported and balance the group notifications formatters saw.
         def abandon(worker)
@@ -153,7 +161,7 @@ module RSpec
           stream = @streams[worker]
 
           # Messages sent outside any group (suite hooks) are not sequenced.
-          if CONTEXT_FREE.include?(event.kind) && (stream.nil? || stream.depth <= 0)
+          if OUTSIDE_GROUPS.include?(event.kind) && (stream.nil? || stream.depth <= 0)
             return deliver(Stream.new(worker), event)
           end
 
@@ -199,6 +207,8 @@ module RSpec
         def deliver(stream, event)
           if CONTEXT_FREE.include?(event.kind)
             deliver_context_free(event)
+          elsif event.kind == :output && stream.open_groups.empty?
+            @write_output.call(event.target, event.payload)
           else
             switch_to(stream) unless @visible.equal?(stream)
             deliver_in_context(stream, event)
@@ -220,6 +230,8 @@ module RSpec
             record_duration(event.target, event.payload) if event.payload
           when :example_started
             @reporter.example_started(event.target)
+          when :output
+            @write_output.call(event.target, event.payload)
           when :example_finished
             @apply_result.call(event.target)
             @reporter.example_finished(event.target)
