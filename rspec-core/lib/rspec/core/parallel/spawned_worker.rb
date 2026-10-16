@@ -63,6 +63,7 @@ module RSpec
           worker = Worker.new(settings[:number], nil, jobs, results,
                               :output => settings[:output], :coordinator => settings[:coordinator], :loading => loading)
           worker.capture_output
+          worker.report_started
           RSpec.configuration.reporter = loading
           configure(args, settings)
           worker.run

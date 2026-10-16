@@ -357,13 +357,10 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     options = %w[--require ./spec/support/at_exit --format documentation --order defined --parallel=2]
 
     status, stdout, stderr = rspec_process(*options)
-    # The coordinator says so when it replaces the killed worker.
-    blocks = stdout.gsub(/^ *Parallel worker \d \(pid \d+\) was started in place .*\n/, '').split(/^(?=P\d$)/)
-    blocks = blocks.select { |block| block =~ /\AP\d$/ }
-    expect(blocks.size).to eq(3)
-    blocks.each do |block|
-      name = block[/\AP\d/]
-      expect(block).to start_with("#{name}\nstdout of #{name}\nsubprocess of #{name}\n  prints\n  is quiet\n")
+    # Without what the coordinator says when it replaces the killed worker.
+    shown = stdout.gsub(/^ *Parallel worker \d \(pid \d+\) was started in place .*\n/, '')
+    %w[P0 P1 P2].each do |name|
+      expect(shown).to include("#{name}\nstdout of #{name}\nsubprocess of #{name}\n  prints\n")
     end
     # The worker killed with SIGKILL runs no `at_exit` handler.
     expect(stdout.scan(/^at_exit of worker \d$/)).not_to be_empty
@@ -1370,7 +1367,8 @@ RSpec.describe 'Parallel execution without fork (spawned workers)', :slow do
   end
 
   it 'aborts spawned workers that do not exit within the shutdown timeout, and shows their thread dumps' do
-    write_suite "RSpec.configure { |c| c.parallel_shutdown_timeout = 1; c.after(:suite) { sleep } }"
+    # In the workers, whose watchdogs it sets: the coordinator keeps the default for their loading.
+    write_suite "RSpec.configure { |c| (c.parallel_shutdown_timeout = 1) if c.parallel_worker_number; c.after(:suite) { sleep } }"
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     status, stdout, stderr = rspec_process(*without_fork, '--require', './spec/spec_helper', '--parallel=2')

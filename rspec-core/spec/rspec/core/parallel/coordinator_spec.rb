@@ -1155,6 +1155,15 @@ module RSpec::Core::Parallel
         expect(process.signals.map(&:first)).to eq(["TERM"])
       end
 
+      it "says Ruby did not get as far as RSpec when it was started as a new process" do
+        allow(RSpec::Core::Parallel).to receive(:spawning?).and_return(true)
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[2] = :never_starts
+
+        expect(coordinator([passing_group("A"), passing_group("B")]).run).to eq(0)
+        expect(messages).to include("never reported back after it was started (Ruby did not get as far as loading RSpec)")
+      end
+
       it "says the group it was given did not run when the run stops early" do
         config.parallel_shutdown_timeout = 0.05
         config.fail_fast = true

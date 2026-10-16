@@ -111,9 +111,12 @@ module RSpec
 
           @runner.exit_code(passed)
         ensure
-          terminate_remaining_workers
-          Parallel.restore_signals(@signal_handlers)
-          WorkerOutput.remove_directory(@output_dir)
+          begin
+            terminate_remaining_workers
+          ensure
+            Parallel.restore_signals(@signal_handlers)
+            WorkerOutput.remove_directory(@output_dir)
+          end
         end
 
       private
@@ -227,12 +230,6 @@ module RSpec
           return unless reporter.respond_to?(:increment_expectation_count)
 
           count.times { reporter.increment_expectation_count }
-        end
-
-        # Anything it sends shows it got past forking and runs RSpec's code.
-        def worker_started(worker)
-          worker.starting = false
-          worker.clear_start_deadline
         end
 
         def non_example_failure(payload, context_description)

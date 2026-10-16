@@ -186,6 +186,12 @@ module RSpec
           @sequencer.output(worker.number, stream, bytes)
         end
 
+        # Anything it sends shows it got past forking and runs RSpec's code.
+        def worker_started(worker)
+          worker.starting = false
+          worker.clear_start_deadline
+        end
+
         # Including those a failed `fork` left without a process.
         def live_workers
           @workers.each { |worker| worker.state = :exited if worker.pid.nil? }

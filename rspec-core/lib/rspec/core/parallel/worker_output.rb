@@ -29,7 +29,8 @@ module RSpec
           io = stream == :err ? $stderr : $stdout
           # What formatters printed before it comes first.
           $stdout.flush if stream == :err
-          bytes = bytes.gsub("\r\n".b, "\n".b) if RSpec::Support::OS.windows? && !io.binmode?
+          # Text-mode output on Windows adds a carriage return to every newline.
+          bytes = bytes.gsub("\r\n".b, "\n".b) if RSpec::Support::OS.windows? && !(io.respond_to?(:binmode?) && io.binmode?)
           io.write(bytes)
           io.flush
         rescue IOError, SystemCallError
@@ -94,12 +95,12 @@ module RSpec
         class Capture
           def initialize(paths, results)
             @results = results
-            @files = paths.transform_values { |path| File.open(path, 'ab') }
+            @paths = paths
             # The process's own streams, which processes it starts inherit,
             # not whatever `$stdout` and `$stderr` point to.
-            STDOUT.reopen(@files[:out]) # rubocop:disable Style/GlobalStdStream
-            STDERR.reopen(@files[:err]) # rubocop:disable Style/GlobalStdStream
-            [STDOUT, STDERR].each do |io| # rubocop:disable Style/GlobalStdStream
+            # rubocop:disable-next Style/GlobalStdStream
+            { STDOUT => paths[:out], STDERR => paths[:err] }.each do |io, path|
+              File.open(path, 'ab') { |file| io.reopen(file) }
               io.binmode
               io.sync = true
             end
@@ -107,7 +108,7 @@ module RSpec
           end
 
           def send(message)
-            sizes = @files.transform_values(&:size)
+            sizes = @paths.transform_values { |path| File.size(path) }
             unless sizes == @announced
               @results.send([:output, sizes])
               @announced = sizes

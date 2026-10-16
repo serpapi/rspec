@@ -117,8 +117,12 @@ module RSpec
           worker.lost = true
           index = worker.current_unit
           requeue = index && accepting_work?
-          report "#{worker.description} never reported back after it was forked (stuck before running any of " \
-                 "RSpec's code, as a deadlock in a fork handler would leave it), so it was sent SIGTERM. It ran " \
+          stuck = if Parallel.spawning?
+                    "started (Ruby did not get as far as loading RSpec)"
+                  else
+                    "forked (stuck before running any of RSpec's code, as a deadlock in a fork handler would leave it)"
+                  end
+          report "#{worker.description} never reported back after it was #{stuck}, so it was sent SIGTERM. It ran " \
                  "nothing#{never_started_outcome(index, requeue)}."
           if requeue
             @unit_states[index] = :pending
