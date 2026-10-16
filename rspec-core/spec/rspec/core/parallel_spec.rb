@@ -63,12 +63,24 @@ module RSpec::Core
         expect(Parallel.coordinator_for(runner, groups(3))).to be_nil
       end
 
-      it "warns and runs serially where fork is not available" do
+      it "warns and runs serially where fork is not available and the run was not started by the `rspec` command" do
         config.parallel_workers = 2
         allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(false)
-        expect(RSpec).to receive(:warning).with(a_string_including("needs `fork`", "Running serially"), :call_site => nil)
+        allow(Runner).to receive(:command_line).and_return(nil)
+        expect(RSpec).to receive(:warning).with(a_string_including("without `fork`", "started by the `rspec` command",
+                                                                   "Running serially"), :call_site => nil)
 
-        expect(Parallel.coordinator_for(runner, groups(3))).to be_nil
+        expect(Parallel.requested_worker_count(config)).to be_nil
+      end
+
+      it "has the workers started as new `rspec` processes where fork is not available" do
+        config.parallel_workers = 3
+        allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(false)
+        allow(Runner).to receive(:command_line).and_return(["exe/rspec", []])
+        expect(RSpec).not_to receive(:warning)
+
+        expect(Parallel.requested_worker_count(config)).to eq(3)
+        expect(Parallel).to be_spawning
       end
 
       it "warns and runs serially inside another tool's parallel worker", :skip => !RSpec::Support::RubyFeatures.fork_supported? do

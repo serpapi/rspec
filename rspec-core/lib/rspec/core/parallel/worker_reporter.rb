@@ -174,10 +174,7 @@ module RSpec
           @metadata_before = nil
           changes = {}
           metadata.each do |key, value|
-            next if NOT_COMPARED.key?(key)
-
-            old = before[key]
-            next if old && old[0].equal?(value) && old[1] == hash_of(value)
+            next if NOT_COMPARED.key?(key) || unchanged?(before[key], value)
 
             if marshalable?([key, value])
               (changes[:set] ||= {})[key] = value
@@ -188,6 +185,10 @@ module RSpec
           deleted = before.keys.reject { |key| metadata.key?(key) || !marshalable?(key) }
           changes[:deleted] = deleted unless deleted.empty?
           changes.empty? ? nil : changes
+        end
+
+        def unchanged?(snapshot, value)
+          snapshot && snapshot[0].equal?(value) && snapshot[1] == hash_of(value)
         end
 
         def marshalable?(value)

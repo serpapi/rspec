@@ -13,12 +13,12 @@ module RSpec::Core::Parallel
     end
 
     it "applies the metadata the worker's run set and deleted when it applies the result" do
-      results.record(example, payload(:set => { :tags => ["a", "b"], :screenshot => "x.png" }, :deleted => [:gone]))
+      results.record(example, payload(:set => { :tags => %w[a b], :screenshot => "x.png" }, :deleted => [:gone]))
       expect(example.metadata).to include(:gone => true, :tags => ["a"])
 
       results.apply(example)
 
-      expect(example.metadata).to include(:tags => ["a", "b"], :screenshot => "x.png", :kept => "k")
+      expect(example.metadata).to include(:tags => %w[a b], :screenshot => "x.png", :kept => "k")
       expect(example.metadata).not_to have_key(:gone)
       expect(example.execution_result.status).to eq(:passed)
     end
@@ -28,7 +28,7 @@ module RSpec::Core::Parallel
       results.record(example, payload(:unsent => { ":callback" => "Proc" }))
       results.apply(example)
 
-      expect(example.metadata.reject { |key, _| key == :execution_result }).to eq(before.reject { |key, _| key == :execution_result })
+      expect(example.metadata.except(:execution_result)).to eq(before.except(:execution_result))
     end
   end
 end

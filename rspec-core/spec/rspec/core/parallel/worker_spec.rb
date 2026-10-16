@@ -2,6 +2,8 @@ require 'fileutils'
 require 'tmpdir'
 require 'rspec/core/parallel/coordinator'
 
+# These specs stand in for the process's own streams, which a worker moves.
+# rubocop:disable-next Style/GlobalStdStream
 module RSpec::Core::Parallel
   RSpec.describe Worker do
     let(:jobs) { Channel.pipe }
@@ -82,6 +84,26 @@ module RSpec::Core::Parallel
 
         expect(instance.watch_coordinator.join(5)).to be_truthy
         expect(File.exist?(dir)).to be false
+      end
+
+      it "exits when the coordinator's pid no longer names a process, its parent unchanged (Windows)" do
+        stub_const("RSpec::Core::Parallel::Worker::COORDINATOR_POLL", 0.01)
+        answers = [true, true, false]
+        instance = Worker.new(2, groups, jobs.first, results.last,
+                              :stderr => stderr, :coordinator => 100, :ppid => lambda { 100 },
+                              :alive => lambda { |pid| pid == 100 && answers.shift },
+                              :exit_now => lambda { |status| exits << [:exit_now, status] })
+
+        expect(instance.watch_coordinator.join(5)).to be_truthy
+        expect(exits).to eq([[:exit_now, 1]])
+        expect(stderr.string).to include("the coordinating process (pid 100) is gone")
+      end
+
+      it "tells a live process from one that is gone" do
+        expect(worker.process_alive?(Process.pid)).to be true
+        gone = Process.spawn(RbConfig.ruby, '-e', 'exit')
+        Process.wait(gone)
+        expect(worker.process_alive?(gone)).to be false
       end
 
       it "still exits when it cannot say why (its stderr is gone too)" do

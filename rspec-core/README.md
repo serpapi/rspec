@@ -444,9 +444,19 @@ custom ordering is not split, with a warning. With a formatter that follows
 example groups (documentation, HTML), each part reads as a block of its own,
 under the group's description; `--profile` adds up the parts.
 
-`--parallel` needs `fork`. On Windows and JRuby, or when `TEST_ENV_NUMBER` is
-already set because another tool is running RSpec in parallel, RSpec prints a
-warning and runs serially. When the system refuses a worker -- too many open
+Where Ruby has no `fork` (Windows, JRuby, TruffleRuby), the workers are new
+processes running the `rspec` command the run was started with -- the same
+arguments, `.rspec` files and `SPEC_OPTS`, without the formatters, and the
+run's seed -- and each loads the spec files itself, as with
+`--no-parallel-preload`. Their jobs and results travel over their standard
+input and output, so what they print goes through the coordinating process
+as described above. Configuration done in-process before
+`RSpec::Core::Runner.run` cannot reach such workers, so there a run that was
+not started by the `rspec` command runs serially, with a warning. Each worker
+starts its own Ruby (seconds on JRuby), and on Windows workers that have to
+be stopped get SIGKILL, which is all Windows can send. When `TEST_ENV_NUMBER`
+is already set because another tool is running RSpec in parallel, RSpec
+prints a warning and runs serially. When the system refuses a worker -- too many open
 files or processes -- the run goes on with the workers it got, and serially if
 it got none, with a warning. `--bisect` and `--dry-run` always run serially,
 and the reproduction command `--bisect` prints includes `--no-parallel`, which
@@ -459,6 +469,8 @@ coordinating process unless it merges forked processes. With SimpleCov, set
 `merge_subprocesses true` in the `SimpleCov.start` block (SimpleCov 1.3; it
 was `enable_for_subprocesses` before): rspec-core's own suite then measures
 the same coverage with `--parallel=8`, preloaded or not, as it does serially.
+Workers started as new processes (no `fork`) start SimpleCov from your spec
+helper themselves, and SimpleCov 1.3.2 merges their results.
 
 ## Store Command Line Options `.rspec`
 

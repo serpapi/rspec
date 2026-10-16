@@ -2,11 +2,28 @@ require 'rspec/core/parallel/coordinator'
 require 'support/aruba_support'
 require 'json'
 
+# Runs `rspec` in a process of its own, where the `--require`d files load
+# afresh. Given at most 60 seconds.
+module ParallelRunProcess
+  def rspec_process(*args)
+    cd('.') do
+      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
+      sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
+                       Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      Process.kill(:KILL, pid) && Process.wait(pid) unless status
+      [status, File.read('stdout.txt'), File.read('stderr.txt')]
+    end
+  end
+end
+
 # The longest group of rspec-core's suite: under `--parallel` it runs as parts in
 # several workers (each has its own aruba directory).
 RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
                :skip => !RSpec::Support::RubyFeatures.fork_supported? do
   include_context "aruba support"
+  include ParallelRunProcess
 
   # The coordinator refuses to nest inside another parallel worker, which is
   # what this very process is when rspec-core's suite runs under `--parallel`.
@@ -19,20 +36,6 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       delete_environment_variable("TEST_ENV_NUMBER")
     end
     run_command(cmd)
-  end
-
-  # A process of its own, where the `--require`d files load afresh. Given at
-  # most 60 seconds.
-  def rspec_process(*args)
-    cd('.') do
-      rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
-      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
-      sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
-                       Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-      Process.kill(:KILL, pid) && Process.wait(pid) unless status
-      [status, File.read('stdout.txt'), File.read('stderr.txt')]
-    end
   end
 
   # Written by the workers' `before(:suite)` hooks: a file can exist before
@@ -325,7 +328,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     run_rspec "#{options} --parallel=2"
     parallel = last_cmd_stdout.scan(/META .*$/).sort
     expect(parallel).to eq(serial.map { |line| line.sub(/ Proc$/, ' NilClass') })
-    expect(last_cmd_stderr.scan(/set example metadata :callback to a Proc/).size).to eq(1)
+    expect(last_cmd_stderr.scan("set example metadata :callback to a Proc").size).to eq(1)
     expect(last_cmd_exit_status).to eq(0)
   end
 
@@ -1274,5 +1277,81 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
       expect(last_cmd_stdout).to include("3 examples, 0 failures, 1 error occurred outside of examples")
       expect(last_cmd_stdout).not_to include("Parallel worker")
     end
+  end
+end
+
+# Where Ruby has no `fork` (Windows, JRuby, TruffleRuby) the workers are new
+# `rspec` processes; elsewhere a `--require`d file takes `fork` away.
+RSpec.describe 'Parallel execution without fork (spawned workers)', :slow do
+  include_context "aruba support"
+  include ParallelRunProcess
+
+  def without_fork
+    return [] unless RSpec::Support::RubyFeatures.fork_supported?
+
+    write_file 'no_fork.rb', "module Process\n  class << self\n    undef_method :fork\n  end\nend\n"
+    %w[--require ./no_fork]
+  end
+
+  # Each group's first example waits for both workers, so that neither runs
+  # every group before the other has started.
+  def write_suite(helper="")
+    write_file 'spec/spec_helper.rb', "
+      RSpec.configure do |c|
+        c.before(:suite) { File.write(\"worker_\#{c.parallel_worker_number}.txt\", [Process.pid, ENV['TEST_ENV_NUMBER'].inspect, c.seed].join(' ')) }
+      end
+      def both_workers_started
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+        sleep 0.05 until Dir['worker_*.txt'].size == 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      end
+      #{helper}
+    "
+    3.times do |i|
+      write_file "spec/s#{i}_spec.rb", "
+        RSpec.describe('S#{i}') do
+          it('passes') { both_workers_started; puts 'printed by S#{i}' }
+          it('#{i == 1 ? 'fails' : 'passes too'}') { expect(#{i}).not_to eq(1) }
+        end
+      "
+    end
+  end
+
+  it 'runs the groups in new rspec processes, with the run’s seed, and reports one run' do
+    write_suite
+    options = without_fork + %w[--require ./spec/spec_helper --parallel=2 --seed 1234 --format progress
+                                --format json --out results.json]
+
+    status, stdout, stderr = rspec_process(*options)
+
+    expect(stdout).to include("6 examples, 1 failure", "Randomized with seed 1234", "printed by S0", "printed by S2")
+    expect(stderr).not_to include("Ignoring `--parallel`")
+    expect(status.exitstatus).to eq(1)
+    results = cd('.') { JSON.parse(File.read('results.json')) }
+    expect(results['summary']).to include('example_count' => 6, 'failure_count' => 1)
+    workers = cd('.') { Dir['worker_*.txt'].map { |file| File.read(file).split } }
+    expect(workers.size).to eq(2)
+    expect(workers.map(&:first).uniq.size).to eq(2)
+    expect(workers.map { |worker| worker.drop(1) }).to eq([['""', '1234'], ['"2"', '1234']])
+  end
+
+  it 'fails the example a spawned worker was running when it is killed, and runs the rest' do
+    write_suite "RSpec.describe('Killed') { it('dies') { both_workers_started; Process.kill(:KILL, Process.pid) } }"
+
+    status, stdout, _stderr = rspec_process(*without_fork, '--require', './spec/spec_helper', '--parallel=2')
+
+    expect(stdout).to include("7 examples, 2 failures", "exited unexpectedly", "while running this example")
+    expect(status.exitstatus).to eq(1)
+  end
+
+  it 'aborts spawned workers that do not exit within the shutdown timeout, and shows their thread dumps' do
+    write_suite "RSpec.configure { |c| c.parallel_shutdown_timeout = 1; c.after(:suite) { sleep } }"
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    status, stdout, stderr = rspec_process(*without_fork, '--require', './spec/spec_helper', '--parallel=2')
+
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 30
+    expect(stdout).to include("6 examples, 1 failure")
+    expect(stderr.scan("did not exit within 1 second of finishing its last example group").size).to eq(2)
+    expect(status.exitstatus).to eq(1)
   end
 end

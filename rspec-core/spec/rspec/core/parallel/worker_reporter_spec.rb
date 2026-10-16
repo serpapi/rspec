@@ -196,7 +196,7 @@ module RSpec::Core::Parallel
         it("changes", :tags => ["a"], :same => "s") do |ex|
           ex.metadata[:added] = { :path => "shot.png" }
           ex.metadata[:tags] << "b"
-          ex.metadata[:same] = ex.metadata[:same]
+          ex.metadata.store(:same, ex.metadata[:same])
           ex.metadata.delete(:gone)
         end
         it("changes nothing") {}
@@ -205,7 +205,7 @@ module RSpec::Core::Parallel
 
       payloads = frames.select { |f| f.first == :example_finished }.to_h { |f| [f.last[:description], f.last[:metadata]] }
       changed, unchanged = payloads.values_at("changes", "changes nothing")
-      expect(changed).to eq(:set => { :added => { :path => "shot.png" }, :tags => ["a", "b"] }, :deleted => [:gone])
+      expect(changed).to eq(:set => { :added => { :path => "shot.png" }, :tags => %w[a b] }, :deleted => [:gone])
       expect(unchanged).to be_nil
     end
 

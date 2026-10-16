@@ -74,9 +74,10 @@ module RSpec
         requested = configuration.parallel_workers
         return nil if requested.nil? || configuration.dry_run?
 
-        unless RSpec::Support::RubyFeatures.fork_supported?
-          RSpec.warning "Ignoring `--parallel`: it needs `fork`, which is not available on #{RUBY_ENGINE} " \
-                        "(#{RUBY_PLATFORM}). Running serially", :call_site => nil
+        if spawning? && !Runner.command_line
+          RSpec.warning "Ignoring `--parallel`: without `fork` (#{RUBY_ENGINE}, #{RUBY_PLATFORM}) its workers are new " \
+                        "`rspec` processes, which takes a run started by the `rspec` command rather than by " \
+                        "`RSpec::Core::Runner.run`. Running serially", :call_site => nil
           return nil
         end
 
@@ -87,6 +88,12 @@ module RSpec
         end
 
         requested == :auto ? default_worker_count : requested
+      end
+
+      # Without `fork`, workers are new `rspec` processes, which load the spec
+      # files themselves.
+      def self.spawning?
+        !RSpec::Support::RubyFeatures.fork_supported?
       end
 
       # @return [Integer] the number of processors

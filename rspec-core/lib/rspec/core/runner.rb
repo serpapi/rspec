@@ -42,8 +42,24 @@ module RSpec
       # code.
       def self.invoke
         disable_autorun!
+        # A worker of a parallel run on a platform without `fork`, started as
+        # a new `rspec` process; it ends the process.
+        if ENV.key?('RSPEC_PARALLEL_WORKER')
+          RSpec::Support.require_rspec_core "parallel/coordinator"
+          Parallel::SpawnedWorker.run(ARGV)
+        end
+        @command_line = [File.file?($0) ? File.expand_path($0) : RSpec::Core.path_to_executable, ARGV.dup]
         status = run(ARGV, $stderr, $stdout).to_i
         exit(status) if status != 0
+      end
+
+      # @private
+      # @return [Array(String, Array<String>), nil] the script and arguments
+      #   of the `rspec` command this process runs, which starts the workers
+      #   of a parallel run on a platform without `fork`; `nil` when the run
+      #   was not started by `.invoke`
+      def self.command_line
+        @command_line ||= nil
       end
 
       # Run a suite of RSpec examples. Does not exit.

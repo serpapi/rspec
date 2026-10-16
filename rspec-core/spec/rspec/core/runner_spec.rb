@@ -297,6 +297,37 @@ module RSpec::Core
         expect(runner).to receive(:exit).with(123)
         runner.invoke
       end
+
+      context "remembering the script and arguments it runs, which a parallel run without `fork` starts its workers with" do
+        before do
+          allow(runner).to receive(:run) { 0 }
+          stub_const("ARGV", %w[--tag fast])
+          allow(File).to receive(:file?).and_call_original
+        end
+
+        after { runner.instance_variable_set(:@command_line, nil) }
+
+        it "takes the script that started the process" do
+          allow(File).to receive(:file?).with($0).and_return(true)
+          runner.invoke
+          expect(runner.command_line).to eq([File.expand_path($0), %w[--tag fast]])
+        end
+
+        it "takes rspec-core's `rspec` when no script started it (`ruby -e`)" do
+          allow(File).to receive(:file?).with($0).and_return(false)
+          runner.invoke
+          expect(runner.command_line).to eq([RSpec::Core.path_to_executable, %w[--tag fast]])
+        end
+      end
+
+      it "runs as the parallel worker a coordinator without `fork` started it as" do
+        RSpec::Support.require_rspec_core "parallel/coordinator"
+        stub_const("ARGV", %w[--tag fast])
+        expect(RSpec::Core::Parallel::SpawnedWorker).to receive(:run).with(%w[--tag fast]) { throw :exited }
+        expect(runner).not_to receive(:run)
+
+        with_env_vars('RSPEC_PARALLEL_WORKER' => '2') { catch(:exited) { runner.invoke } }
+      end
     end
 
     describe ".run" do
@@ -365,6 +396,7 @@ module RSpec::Core
 
       describe "#run" do
         it 'hands the ordered example groups to a parallel coordinator when one applies, then persists example statuses' do
+          allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(true)
           RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
           RSpec.describe("group 2") { example("passing") { expect(1).to eq(1) } }
           allow(config).to receive(:load_spec_files)
@@ -389,6 +421,7 @@ module RSpec::Core
         end
 
         it 'plans a parallel run that the spec files configure, once they have loaded' do
+          allow(RSpec::Support::RubyFeatures).to receive(:fork_supported?).and_return(true)
           RSpec.describe("group 1") { example("passing") { expect(1).to eq(1) } }
           allow(config).to receive(:load_spec_files) { config.parallel_workers = 2 }
           expect(Parallel).to receive(:coordinator_for).and_return(nil)

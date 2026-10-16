@@ -29,7 +29,9 @@ Enhancements:
   (`RSpec::Core::Configuration#parallel_preload`) the workers are forked before the spec
   files are loaded and each loads them itself, so nothing the spec files do while loading
   is shared with the workers; a worker that does not load the examples the coordinating
-  process has is not used. Where `fork` is unavailable the run is serial with a warning.
+  process has is not used. Where Ruby has no `fork` (Windows, JRuby, TruffleRuby) the
+  workers are new processes running the same `rspec` command with the run's seed, and load
+  the spec files themselves.
   `--bisect` runs serially, and the reproduction command it prints now ends with
   `--no-parallel`.
   (Illia Zub)

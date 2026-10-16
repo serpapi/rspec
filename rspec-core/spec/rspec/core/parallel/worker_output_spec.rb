@@ -2,6 +2,8 @@ require 'fileutils'
 require 'tmpdir'
 require 'rspec/core/parallel/coordinator'
 
+# These specs stand in for the process's own streams, which a worker moves.
+# rubocop:disable-next Style/GlobalStdStream
 module RSpec::Core::Parallel
   RSpec.describe WorkerOutput do
     let!(:dir) { Dir.mktmpdir }

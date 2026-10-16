@@ -102,9 +102,15 @@ module RSpec
             handles.each { |other| other.close_all unless other.equal?(self) }
             close_parent_ends
             Worker.new(@number, units, @child_jobs, @child_results,
-                       worker_options.merge(:output => @output && @output.paths)).run
+                       worker_options.merge(:output => @output&.paths)).run
             # :nocov:
           end
+        end
+
+        # @return [Integer] the pid of a new process running `command`, its
+        #   jobs on its standard input and its results on its standard output
+        def spawn_worker(process, command, environment)
+          process.spawn(environment, *command, :in => @child_jobs.io, :out => @child_results.io)
         end
 
         def close_parent_ends
@@ -151,7 +157,12 @@ module RSpec
         def signal(process, signal_name, escalation, deadline)
           @escalation = escalation
           self.deadline = deadline
-          process.kill(signal_name, @pid) if @pid
+          begin
+            process.kill(signal_name, @pid) if @pid
+          rescue Errno::EINVAL
+            # Windows cannot send SIGTERM.
+            process.kill('KILL', @pid)
+          end
         rescue Errno::ESRCH, Errno::EPERM
           nil
         end

@@ -3,6 +3,7 @@ RSpec::Support.require_rspec_core "parallel/channel"
 RSpec::Support.require_rspec_core "parallel/remote_exception"
 RSpec::Support.require_rspec_core "parallel/worker_reporter"
 RSpec::Support.require_rspec_core "parallel/worker"
+RSpec::Support.require_rspec_core "parallel/spawned_worker"
 RSpec::Support.require_rspec_core "parallel/sequencer"
 RSpec::Support.require_rspec_core "parallel/results"
 RSpec::Support.require_rspec_core "parallel/suite_index"
@@ -46,7 +47,7 @@ module RSpec
           @world = runner.world
           @worker_count = worker_count
           @process = options.fetch(:process) { Process }
-          @spawn = options.fetch(:spawn) { method(:fork_worker) }
+          @spawn = options.fetch(:spawn) { method(Parallel.spawning? ? :spawn_worker : :fork_worker) }
           @tick = options.fetch(:tick, TICK)
           @term_grace = options.fetch(:term_grace, TERM_GRACE)
           @kill_grace = options.fetch(:kill_grace, KILL_GRACE)
@@ -61,6 +62,7 @@ module RSpec
           @next_reap_at = 0.0
           @last_turn_at = nil
           @output_dir = nil
+          @boot_allowance = 0.0
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -82,7 +84,7 @@ module RSpec
           return run_serially if @workers.empty?
 
           passed = reporter.report(@world.example_count(@example_groups)) do
-            @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result), :output => method(:write_output))
+            @sequencer = Sequencer.new(reporter, :apply_result => method(:apply_result), :output => WorkerOutput.method(:write))
 
             begin
               @last_turn_at = now
@@ -223,45 +225,6 @@ module RSpec
           return unless reporter.respond_to?(:increment_expectation_count)
 
           count.times { reporter.increment_expectation_count }
-        end
-
-        # What a worker that loaded the spec files itself printed while it
-        # did is what this process printed when it loaded them.
-        def output(worker, sizes)
-          return unless worker.output
-          return worker.output.skip(sizes) if worker.loading
-
-          worker.output.read(sizes) { |stream, bytes| show_output(worker, stream, bytes) }
-        end
-
-        # What is left in a worker's output files once it has gone: what it
-        # printed after it last reported, such as a crash report or what its
-        # `at_exit` handlers printed.
-        def drain_output(worker)
-          return unless worker.output
-
-          worker.output.read { |stream, bytes| show_output(worker, stream, bytes) }
-          worker.output.close
-        end
-
-        # A worker dismissed before the run used it has only loaded the spec
-        # files, which this process did too; before the run reports, no
-        # worker has run anything.
-        def show_output(worker, stream, bytes)
-          return if worker.state == :dismissed || @sequencer.nil?
-
-          @sequencer.output(worker.number, stream, bytes)
-        end
-
-        def write_output(stream, bytes)
-          io = stream == :err ? $stderr : $stdout
-          # What formatters printed before it comes first.
-          $stdout.flush if stream == :err
-          bytes = bytes.gsub("\r\n".b, "\n".b) if RSpec::Support::OS.windows? && !io.binmode?
-          io.write(bytes)
-          io.flush
-        rescue IOError, SystemCallError
-          nil
         end
 
         # Anything it sends shows it got past forking and runs RSpec's code.

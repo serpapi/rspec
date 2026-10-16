@@ -18,7 +18,7 @@ module RSpec
 
         # Called once the run is configured, before the spec files are loaded.
         def before_loading
-          return if @configuration.parallel_preload?
+          return if @configuration.parallel_preload? && !Parallel.spawning?
           return @postponed_by = '`config.parallel_workers`' if @configuration.parallel_workers.nil?
           # Such a run aborts, with `exit!`, as soon as the spec files have loaded.
           if @configuration.only_failures_but_not_configured?
@@ -41,7 +41,7 @@ module RSpec
         #   or `nil` for a serial run
         def coordinator_for(example_groups)
           return assign(example_groups) if @decided
-          return Parallel.coordinator_for(@runner, example_groups) if @configuration.parallel_preload?
+          return Parallel.coordinator_for(@runner, example_groups) if @configuration.parallel_preload? && !Parallel.spawning?
 
           # Too late to fork before loading, and forking after loading is
           # what this run was configured not to do.
@@ -81,7 +81,7 @@ module RSpec
         end
 
         def warn_late
-          what = @postponed_by || '`config.parallel_preload = false`'
+          what = @postponed_by || (Parallel.spawning? ? 'a run without `fork`' : '`config.parallel_preload = false`')
           RSpec.warning "Ignoring `--parallel`: #{what} was set while the spec files were loading, too late to fork " \
                         "the workers before them as `config.parallel_preload = false` asks. Set it before they " \
                         "load: on the command line, in `.rspec` or in a `--require`d file. Running serially",

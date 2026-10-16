@@ -24,6 +24,18 @@ module RSpec
           nil
         end
 
+        # Shows what a worker printed where this process prints.
+        def self.write(stream, bytes)
+          io = stream == :err ? $stderr : $stdout
+          # What formatters printed before it comes first.
+          $stdout.flush if stream == :err
+          bytes = bytes.gsub("\r\n".b, "\n".b) if RSpec::Support::OS.windows? && !io.binmode?
+          io.write(bytes)
+          io.flush
+        rescue IOError, SystemCallError
+          nil
+        end
+
         def self.remove_directory(dir)
           return unless dir
 
@@ -35,7 +47,7 @@ module RSpec
 
         def initialize(dir, number)
           @paths = STREAMS.to_h { |stream| [stream, File.join(dir, "worker-#{number}.#{stream}")] }
-          @paths.each_value { |path| File.open(path, 'wb') {} }
+          @paths.each_value { |path| File.binwrite(path, '') }
           @readers = {}
           @read = { :out => 0, :err => 0 }
         end
@@ -83,9 +95,11 @@ module RSpec
           def initialize(paths, results)
             @results = results
             @files = paths.transform_values { |path| File.open(path, 'ab') }
-            STDOUT.reopen(@files[:out])
-            STDERR.reopen(@files[:err])
-            [STDOUT, STDERR].each do |io|
+            # The process's own streams, which processes it starts inherit,
+            # not whatever `$stdout` and `$stderr` point to.
+            STDOUT.reopen(@files[:out]) # rubocop:disable Style/GlobalStdStream
+            STDERR.reopen(@files[:err]) # rubocop:disable Style/GlobalStdStream
+            [STDOUT, STDERR].each do |io| # rubocop:disable Style/GlobalStdStream
               io.binmode
               io.sync = true
             end

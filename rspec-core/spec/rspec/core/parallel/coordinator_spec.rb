@@ -124,9 +124,7 @@ module RSpec::Core::Parallel
         when :never_loads, :never_starts, :starts_once_asked_to_quit then stall(behaviour, handle, results)
         when :dies_loading   then Thread.current.kill
         else
-          print_while_loading(handle, results) if behaviour == :prints_while_loading
-          print_to(handle, results, "loaded quietly\n", "", false) if behaviour == :prints_unannounced_while_loading
-          report_loaded(results, behaviour) if handle.loading
+          load_spec_files(handle, results, behaviour)
           send_extra_frames(results, behaviour, handle)
           run_fake_worker(handle.number, jobs, results, behaviour) { |status| exit_status = status }
         end
@@ -195,19 +193,25 @@ module RSpec::Core::Parallel
       send_unknown_ids(results) if behaviour == :unknown_ids
       results.send([:expectations, 3]) if behaviour == :counts_expectations
       print_to(handle, results, "printed by worker #{handle.number}\n", "warned by worker #{handle.number}\n") if behaviour == :prints
-      print_to(handle, results, "left behind by worker #{handle.number}\n", "", false) if behaviour == :prints_unannounced
+      print_to(handle, results, "left behind by worker #{handle.number}\n", "", :announce => false) if behaviour == :prints_unannounced
     end
 
     # As a worker's own output goes to the files once it has moved its
     # standard output and error there; the frame is what it sends next.
-    def print_to(handle, results, out, err, announce=true)
+    def print_to(handle, results, out, err, announce: true)
       File.open(handle.output.paths[:out], 'ab') { |file| file.write(out) }
       File.open(handle.output.paths[:err], 'ab') { |file| file.write(err) }
       results.send([:output, handle.output.paths.transform_values { |path| File.size(path) }]) if announce
     end
 
-    def print_while_loading(handle, results)
-      print_to(handle, results, "noise while loading\n", "")
+    def load_spec_files(handle, results, behaviour)
+      print_while_loading(handle, results, behaviour)
+      report_loaded(results, behaviour) if handle.loading
+    end
+
+    def print_while_loading(handle, results, behaviour)
+      print_to(handle, results, "noise while loading\n", "") if behaviour == :prints_while_loading
+      print_to(handle, results, "loaded quietly\n", "", :announce => false) if behaviour == :prints_unannounced_while_loading
     end
 
     def send_unknown_ids(results)
@@ -272,6 +276,10 @@ module RSpec::Core::Parallel
     def started_coordinator(units, worker_count=2, options={})
       new_coordinator(units, worker_count, options).tap(&:start)
     end
+
+    # The workers here are threads standing in for forked processes, also
+    # where Ruby has no `fork`.
+    before { allow(RSpec::Core::Parallel).to receive(:spawning?).and_return(false) }
 
     let(:short_graces) { { :term_grace => 0.1, :kill_grace => 0.1 } }
 
@@ -908,6 +916,32 @@ module RSpec::Core::Parallel
       [$stdout.string, $stderr.string]
     ensure
       $stdout, $stderr = streams
+    end
+
+    it "starts workers as new `rspec` processes where there is no `fork`, giving them longer to load" do
+      allow(RSpec::Core::Parallel).to receive(:spawning?).and_return(true)
+      allow(RSpec::Core::Runner).to receive(:command_line).and_return(["/app/bin/rspec", %w[--tag fast]])
+      spawned = []
+      killed = []
+      fake = double(:process)
+      allow(fake).to receive(:spawn) { |env, *command, redirects| (spawned << [env, command, redirects.keys]) && (4242 + spawned.size) }
+      allow(fake).to receive(:kill) { |_signal, pid| killed << pid }
+      allow(fake).to receive(:waitpid2) { |pid, _flags| killed.include?(pid) ? [pid, nil] : nil }
+      config.seed = 99
+
+      instance = Coordinator.new(runner, 2, :process => fake, :tick => 0.01, :kill_grace => 1)
+      instance.start
+      instance.dismiss
+
+      expect(spawned.size).to eq(2)
+      env, command, redirects = spawned.first
+      expect(command).to eq([RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", "/app/bin/rspec", "--tag", "fast"])
+      expect(env).to include("RSPEC_PARALLEL_WORKER" => "1", "RSPEC_PARALLEL_COORDINATOR" => Process.pid.to_s,
+                             "RSPEC_PARALLEL_SEED" => "99", "TEST_ENV_NUMBER" => "")
+      expect(env["RSPEC_PARALLEL_STDOUT"]).to end_with("worker-1.out")
+      expect(redirects).to eq([:in, :out])
+      expect(killed).to eq([4243, 4244])
+      expect(instance.instance_variable_get(:@boot_allowance)).to be > 0
     end
 
     it "reports the groups that never ran when no worker remains" do
