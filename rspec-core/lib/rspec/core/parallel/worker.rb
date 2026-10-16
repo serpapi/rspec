@@ -58,8 +58,7 @@ module RSpec
         # Never returns: ends the process when the coordinator has no more work.
         def run
           capture_output
-          # First, so the coordinator knows it got past `fork`.
-          @results.send([:started])
+          report_started
           watch_coordinator if @watch_coordinator
           prepare
           load_spec_files unless @example_groups
@@ -71,6 +70,17 @@ module RSpec
           @exit_now.call(1)
         end
 
+        # First, so the coordinator knows it got past `fork` -- or, for a
+        # spawned worker, that it got as far as RSpec before its `--require`d
+        # files load.
+        # @private
+        def report_started
+          return if @reported_started
+
+          @reported_started = true
+          @results.send([:started])
+        end
+
         # @private
         def capture_output
           return if @captured || !@output
@@ -80,7 +90,9 @@ module RSpec
           @direct_stderr = STDERR.dup # rubocop:disable Style/GlobalStdStream
           @results = WorkerOutput::Capture.new(@output, @results)
         rescue SystemCallError, IOError
-          nil # it writes where the run does
+          # It writes where the run does.
+          @direct_stderr&.close
+          @direct_stderr = nil
         end
 
         # A worker notices that the coordinator is gone when it next reports

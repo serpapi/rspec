@@ -8,12 +8,14 @@ module ParallelRunProcess
   def rspec_process(*args)
     cd('.') do
       rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
-      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
+      # Absolute, and in this directory: JRuby keeps its own apart from the process's.
+      out, err = %w[stdout.txt stderr.txt].map { |name| File.expand_path(name) }
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => out, :err => err, :chdir => Dir.pwd)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
       sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
                        Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       Process.kill(:KILL, pid) && Process.wait(pid) unless status
-      [status, File.read('stdout.txt'), File.read('stderr.txt')]
+      [status, File.read(out), File.read(err)]
     end
   end
 end
@@ -357,11 +359,10 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     options = %w[--require ./spec/support/at_exit --format documentation --order defined --parallel=2]
 
     status, stdout, stderr = rspec_process(*options)
-    blocks = stdout.split(/^(?=P\d$)/).select { |block| block =~ /\AP\d$/ }
-    expect(blocks.size).to eq(3)
-    blocks.each do |block|
-      name = block[/\AP\d/]
-      expect(block).to start_with("#{name}\nstdout of #{name}\nsubprocess of #{name}\n  prints\n  is quiet\n")
+    # Without what the coordinator says when it replaces the killed worker.
+    shown = stdout.gsub(/^ *Parallel worker \d \(pid \d+\) was started in place .*\n/, '')
+    %w[P0 P1 P2].each do |name|
+      expect(shown).to include("#{name}\nstdout of #{name}\nsubprocess of #{name}\n  prints\n")
     end
     # The worker killed with SIGKILL runs no `at_exit` handler.
     expect(stdout.scan(/^at_exit of worker \d$/)).not_to be_empty
@@ -373,6 +374,30 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     expect(stdout.scan(/^loading p\d$/)).to eq(["loading p0", "loading p1", "loading p2"])
     expect(stdout).to include("6 examples, 0 failures")
     expect(status.exitstatus).to eq(0)
+  end
+
+  it 'starts a worker with the same TEST_ENV_NUMBER in place of one that crashed, which runs what was left' do
+    4.times do |i|
+      write_file_formatted "spec/r#{i}_spec.rb", "
+        RSpec.describe('R#{i}') do
+          it('records') do
+            File.write('ran_r#{i}', [Process.pid, ENV['TEST_ENV_NUMBER'].inspect].join(' '))
+            Process.kill(:KILL, Process.pid) if #{i} == 0
+            sleep 1 if #{i} == 1
+          end
+        end
+      "
+    end
+
+    run_rspec '--parallel=2 --order defined'
+
+    expect(last_cmd_stdout).to include("4 examples, 1 failure", "exited unexpectedly", "was started in place of the lost worker")
+    expect(last_cmd_exit_status).to eq(1)
+    ran = cd('.') { Dir['ran_r*'].to_h { |file| [file, File.read(file).split] } }
+    expect(ran.keys).to eq(%w[ran_r0 ran_r1 ran_r2 ran_r3])
+    crashed_pid, crashed_env = ran['ran_r0']
+    replacement = ran.values.find { |pid, env| env == crashed_env && pid != crashed_pid }
+    expect(replacement).not_to be_nil
   end
 
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
@@ -1344,7 +1369,8 @@ RSpec.describe 'Parallel execution without fork (spawned workers)', :slow do
   end
 
   it 'aborts spawned workers that do not exit within the shutdown timeout, and shows their thread dumps' do
-    write_suite "RSpec.configure { |c| c.parallel_shutdown_timeout = 1; c.after(:suite) { sleep } }"
+    # In the workers, whose watchdogs it sets: the coordinator keeps the default for their loading.
+    write_suite "RSpec.configure { |c| (c.parallel_shutdown_timeout = 1) if c.parallel_worker_number; c.after(:suite) { sleep } }"
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     status, stdout, stderr = rspec_process(*without_fork, '--require', './spec/spec_helper', '--parallel=2')

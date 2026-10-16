@@ -107,8 +107,10 @@ module RSpec::Core::Parallel
     # worker replaces its inherited copy, and with its own copies of the
     # pipe ends since the coordinator closes the child's ends after spawning
     # (as it must after a fork).
+    # A worker started in place of a lost one with the same number behaves as
+    # `worker_behaviours[[number, :replacement]]` says, normally by default.
     def spawn(handle, _handles)
-      behaviour = worker_behaviours.fetch(handle.number, :normal)
+      behaviour = behaviour_of(handle)
       jobs = Channel::Reader.new(handle.child_jobs.io.dup)
       results = Channel::Writer.new(handle.child_results.io.dup)
       exit_status = nil
@@ -135,6 +137,12 @@ module RSpec::Core::Parallel
       end
 
       @process.register(thread) { exit_status && FakeProcess::Status.new(exit_status, nil) }
+    end
+
+    def behaviour_of(handle)
+      replacement = (@started_numbers ||= []).include?(handle.number)
+      @started_numbers << handle.number
+      worker_behaviours.fetch(replacement ? [handle.number, :replacement] : handle.number, :normal)
     end
 
     # What a real worker sends first, which the fakes standing in for one send
@@ -939,20 +947,82 @@ module RSpec::Core::Parallel
       expect(env).to include("RSPEC_PARALLEL_WORKER" => "1", "RSPEC_PARALLEL_COORDINATOR" => Process.pid.to_s,
                              "RSPEC_PARALLEL_SEED" => "99", "TEST_ENV_NUMBER" => "")
       expect(env["RSPEC_PARALLEL_STDOUT"]).to end_with("worker-1.out")
-      expect(redirects).to eq([:in, :out])
+      expect(redirects).to eq([:in, :out, :chdir])
       expect(killed).to eq([4243, 4244])
       expect(instance.instance_variable_get(:@boot_allowance)).to be > 0
     end
 
-    it "reports the groups that never ran when no worker remains" do
-      crashing = RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }
-      groups = [crashing, RSpec.describe("Also crashing") { it("dies") { Thread.current.kill } }, passing_group("C"), passing_group("D")]
+    it "reports the groups that never ran when no worker remains, once as many workers as the run has were replaced" do
+      crashing = Array.new(4) { |i| RSpec.describe("Crashing #{i}") { it("dies") { Thread.current.kill } } }
       config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
 
-      exit_code = coordinator(groups).run
+      exit_code = coordinator(crashing + [passing_group("C"), passing_group("D")]).run
 
       expect(exit_code).to eq(config.failure_exit_code)
-      expect(messages).to include("2 example groups did not run because no worker remained to run them")
+      expect(messages.scan("was started in place of the lost worker").size).to eq(2)
+      expect(messages).to include("No further lost workers are replaced", "4 examples, 4 failures",
+                                  "2 example groups did not run because no worker remained to run them")
+    end
+
+    it "starts a worker with the lost one's number in its place, which runs the remaining groups" do
+      crashing = RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }
+      config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+
+      exit_code = coordinator([crashing, passing_group("A"), passing_group("B"), passing_group("C")]).run
+
+      expect(exit_code).to eq(config.failure_exit_code)
+      expect(@started_numbers.sort).to eq([1, 1, 2])
+      expect(messages).to match(/Parallel worker 1 \(pid \d+\) was started in place of the lost worker \(pid \d+\)\./)
+      expect(messages).to include("4 examples, 1 failure", "exited unexpectedly")
+    end
+
+    context "when the workers loaded the spec files themselves" do
+      let(:groups) do
+        [RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }, passing_group("A"), passing_group("B"), passing_group("C")]
+      end
+
+      before { config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new) }
+
+      it "starts a new `rspec` process in place of a lost one, since forking this process would load them twice" do
+        allow(RSpec::Core::Runner).to receive(:command_line).and_return(["/app/bin/rspec", []])
+        instance = started_coordinator(groups)
+        allow(instance).to receive(:spawn_worker) { |handle, handles| spawn(handle, handles) }
+        instance.assign(@units, units_of(@units))
+
+        expect(instance.run).to eq(config.failure_exit_code)
+        expect(instance).to have_received(:spawn_worker).once
+        expect(messages).to match(/Parallel worker 1 \(pid \d+\) was started in place of the lost worker \(pid \d+\) and loads the spec files first\./)
+        expect(messages).to include("4 examples, 1 failure")
+      end
+
+      it "starts none in place of a lost one when the run was not started by the `rspec` command" do
+        allow(RSpec::Core::Runner).to receive(:command_line).and_return(nil)
+        instance = started_coordinator(groups)
+        instance.assign(@units, units_of(@units))
+
+        expect(instance.run).to eq(config.failure_exit_code)
+        expect(@started_numbers.sort).to eq([1, 2])
+        expect(messages).to include("4 examples, 1 failure")
+      end
+    end
+
+    it "starts no worker in place of one lost once the run stops early" do
+      config.fail_fast = 1
+      quitting = world
+      config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new)
+      failing = RSpec.describe("Failing") { it("fails") { raise "nope" } }
+      crashing = RSpec.describe("Crashing") do
+        it("dies once the run stops") do
+          sleep 0.01 until quitting.wants_to_quit
+          Thread.current.kill
+        end
+      end
+
+      exit_code = coordinator([crashing, failing, passing_group("A"), passing_group("B")]).run
+
+      expect(exit_code).to eq(config.failure_exit_code)
+      expect(@started_numbers.sort).to eq([1, 2])
+      expect(messages).not_to include("was started in place")
     end
 
     it "stops dispatching when the world wants to quit, as on Ctrl-C" do
@@ -1085,6 +1155,15 @@ module RSpec::Core::Parallel
         expect(process.signals.map(&:first)).to eq(["TERM"])
       end
 
+      it "says Ruby did not get as far as RSpec when it was started as a new process" do
+        allow(RSpec::Core::Parallel).to receive(:spawning?).and_return(true)
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[2] = :never_starts
+
+        expect(coordinator([passing_group("A"), passing_group("B")]).run).to eq(0)
+        expect(messages).to include("never reported back after it was started (Ruby did not get as far as loading RSpec)")
+      end
+
       it "says the group it was given did not run when the run stops early" do
         config.parallel_shutdown_timeout = 0.05
         config.fail_fast = true
@@ -1102,13 +1181,14 @@ module RSpec::Core::Parallel
       it "is terminated once it misses its start deadline, and what no worker ran is reported" do
         config.parallel_shutdown_timeout = 0.05
         worker_behaviours[1] = worker_behaviours[2] = :never_starts
+        worker_behaviours[[1, :replacement]] = worker_behaviours[[2, :replacement]] = :never_starts
 
         exit_code = coordinator([passing_group("A"), passing_group("B")]).run
 
         expect(exit_code).to eq(config.failure_exit_code)
-        expect(messages.scan("never reported back after it was forked").size).to eq(2)
-        expect(messages).to include("did not run because no worker remained to run them")
-        expect(process.signals.map(&:first)).to eq(%w[TERM TERM])
+        expect(messages.scan("never reported back after it was forked").size).to eq(4)
+        expect(messages).to include("No further lost workers are replaced", "did not run because no worker remained to run them")
+        expect(process.signals.map(&:first)).to eq(%w[TERM TERM TERM TERM])
       end
     end
 

@@ -24,6 +24,7 @@ module RSpec
         # itself and reports what it loaded.
         def start
           @started_at = now
+          @load_themselves = true
           # A spawned worker starts Ruby and loads the `--require`d files first.
           @boot_allowance = Parallel.spawning? ? Process.times.then { |times| times.utime + times.stime } : 0.0
           start_workers(nil)
@@ -86,17 +87,17 @@ module RSpec
           end
         end
 
-        # @return [Boolean] whether the worker started
-        def start_worker(number, units)
-          worker = WorkerHandle.new(number, @output_dir)
+        # @return [WorkerHandle, nil] the worker, if it started
+        def start_worker(number, units, starter=@spawn, generation=1)
+          worker = WorkerHandle.new(number, @output_dir, generation)
           worker.loading = units.nil?
           @workers << worker
-          worker.pid = @spawn.call(worker, @workers)
+          worker.pid = starter.call(worker, @workers)
           worker.close_child_ends
           worker.starting = true
           # A worker forked before loading gets the loading deadline instead.
           worker.start_deadline = now + @configuration.parallel_shutdown_timeout unless worker.loading
-          true
+          worker
         rescue *OUT_OF_RESOURCES => e
           if worker
             @workers.delete(worker)
@@ -105,7 +106,43 @@ module RSpec
           RSpec.warning "Started #{@workers.size} of #{@worker_count} parallel workers: the next could not be started " \
                         "(#{e.class}: #{e.message}). #{@workers.empty? ? 'Running serially' : 'Going on without it'}",
                         :call_site => nil
-          false
+          nil
+        end
+
+        # A worker lost while it ran groups is replaced by one with its
+        # number -- and so its `TEST_ENV_NUMBER` -- while groups wait to run
+        # and the run goes on: not once it stops early or ends by `exit` or a
+        # signal, and no more often than there are workers. The examples the
+        # lost worker failed stay failed.
+        def replace(worker)
+          return unless worker.lost && accepting_work? && !@queue.empty? && @exit_status.nil? && @termination_signal.nil?
+          return no_more_replacements if @replacements >= @worker_count
+          return unless (starter = replacement_starter)
+
+          @replacements += 1
+          replacement = start_worker(worker.number, @load_themselves ? nil : @units, starter, @replacements + 1)
+          return unless replacement
+
+          replacement.deadline = now + @load_allowance if replacement.loading
+          report "#{replacement.description} was started in place of the lost worker (pid #{worker.pid})" \
+                 "#{' and loads the spec files first' if replacement.loading}."
+        end
+
+        # Workers that loaded the spec files themselves are replaced the same
+        # way, by a new process when they were forked: forking this process,
+        # which has loaded them, is what the run is configured not to do.
+        def replacement_starter
+          return @spawn if !@load_themselves || Parallel.spawning?
+
+          method(:spawn_worker) if Runner.command_line
+        end
+
+        def no_more_replacements
+          return if @replacements_exhausted
+
+          @replacements_exhausted = true
+          report "No further lost workers are replaced: the run has started as many in place of lost ones as it " \
+                 "has workers (#{@replacements})."
         end
 
         def fork_worker(worker, workers)
@@ -147,6 +184,12 @@ module RSpec
           return if worker.state == :dismissed || @sequencer.nil?
 
           @sequencer.output(worker.number, stream, bytes)
+        end
+
+        # Anything it sends shows it got past forking and runs RSpec's code.
+        def worker_started(worker)
+          worker.starting = false
+          worker.clear_start_deadline
         end
 
         # Including those a failed `fork` left without a process.

@@ -235,7 +235,8 @@ module RSpec::Core::Parallel
 
         after do
           [stdout_stand_in, stderr_stand_in].each(&:close)
-          FileUtils.remove_entry(dir)
+          # Windows does not remove a file the worker still has open (its copy of stderr).
+          FileUtils.remove_entry(dir, RSpec::Support::OS.windows?)
         end
 
         it "moves its standard output and error into them and says how far they reach before the next frame" do

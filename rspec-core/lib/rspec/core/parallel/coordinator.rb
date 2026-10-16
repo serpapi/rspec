@@ -63,6 +63,8 @@ module RSpec
           @last_turn_at = nil
           @output_dir = nil
           @boot_allowance = 0.0
+          @load_themselves = false
+          @replacements = 0
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -109,9 +111,12 @@ module RSpec
 
           @runner.exit_code(passed)
         ensure
-          terminate_remaining_workers
-          Parallel.restore_signals(@signal_handlers)
-          WorkerOutput.remove_directory(@output_dir)
+          begin
+            terminate_remaining_workers
+          ensure
+            Parallel.restore_signals(@signal_handlers)
+            WorkerOutput.remove_directory(@output_dir)
+          end
         end
 
       private
@@ -225,12 +230,6 @@ module RSpec
           return unless reporter.respond_to?(:increment_expectation_count)
 
           count.times { reporter.increment_expectation_count }
-        end
-
-        # Anything it sends shows it got past forking and runs RSpec's code.
-        def worker_started(worker)
-          worker.starting = false
-          worker.clear_start_deadline
         end
 
         def non_example_failure(payload, context_description)
@@ -399,6 +398,7 @@ module RSpec
             worker.exit_status = status
             judge_exit(worker, status)
             worker.state = :exited
+            replace(worker)
           end
         end
 
@@ -425,6 +425,7 @@ module RSpec
             drain_output(worker)
             abort_unit(worker)
             worker.state = :abandoned
+            replace(worker)
           end
         end
 
