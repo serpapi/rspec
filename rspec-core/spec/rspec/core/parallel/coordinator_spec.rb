@@ -979,8 +979,10 @@ module RSpec::Core::Parallel
     end
 
     context "when the workers loaded the spec files themselves" do
+      # The others still running when the crash is noticed, so that groups wait to run.
       let(:groups) do
-        [RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }, passing_group("A"), passing_group("B"), passing_group("C")]
+        [RSpec.describe("Crashing") { it("dies") { Thread.current.kill } }] +
+          %w[A B C].map { |name| RSpec.describe(name) { it("passes") { sleep 0.5 } } }
       end
 
       before { config.ordering_registry.register(:global, RSpec::Core::Ordering::Identity.new) }
