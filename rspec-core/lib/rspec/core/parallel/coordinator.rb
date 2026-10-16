@@ -254,25 +254,9 @@ module RSpec
         def example_finished(worker, example_id, payload, bytes)
           index.with_example(example_id) do |example|
             worker.current_example = nil
+            payload[:metadata] = @results.metadata_changes(worker.description, payload[:metadata])
             record_result(example, payload)
-            warn_unsent_metadata(worker, payload[:metadata])
             @sequencer.example_finished(worker.number, example, bytes)
-          end
-        end
-
-        # Once per metadata key.
-        def warn_unsent_metadata(worker, changes)
-          unsent = changes && changes[:unsent]
-          return unless unsent
-
-          @unsent_metadata ||= {}
-          unsent.each do |key, class_name|
-            next if @unsent_metadata.key?(key)
-
-            @unsent_metadata[key] = true
-            RSpec.warning "#{worker.description} set example metadata #{key} to a #{class_name}, which cannot be " \
-                          "marshaled to reach the formatters, so they see the value it had before the example ran. " \
-                          "Later values of #{key} that cannot be marshaled are not reported", :call_site => nil
           end
         end
 

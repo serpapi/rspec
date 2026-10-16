@@ -303,7 +303,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
         def example_passed(notification)
           metadata = notification.example.metadata
           @output.puts \"META \#{notification.example.description}: \#{metadata[:screenshot].inspect} \" \\
-                       \"\#{metadata[:tags].inspect} \#{metadata.key?(:gone)} \#{metadata[:callback].class}\"
+                       \"\#{metadata[:tags].inspect} \#{metadata.key?(:gone)} \#{metadata[:callback].class} \#{metadata[:lazy].class}\"
         end
       end
     "
@@ -316,22 +316,32 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
             ex.metadata.delete(:gone)
           end
           it('callback#{i}') { |ex| ex.metadata[:callback] = lambda {} }
+          it('lazy#{i}') { |ex| Object.const_set(:ParallelSpecLazyThing, Class.new) unless defined?(ParallelSpecLazyThing); ex.metadata[:lazy] = ParallelSpecLazyThing.new }
         end
       "
     end
     options = '--require ./spec/support/metadata_formatter --format progress --format MetadataFormatter'
 
-    run_rspec options
-    serial = last_cmd_stdout.scan(/META .*$/).sort
-    expect(serial.size).to eq(8)
-    expect(serial.first).to eq("META callback0: nil nil true Proc")
-    expect(serial).to include("META e3: \"shot-3.png\" [\"a\", \"b\"] false NilClass")
-
+    # In parallel first: a serial run in this process would define the class here too.
     run_rspec "#{options} --parallel=2"
     parallel = last_cmd_stdout.scan(/META .*$/).sort
-    expect(parallel).to eq(serial.map { |line| line.sub(/ Proc$/, ' NilClass') })
-    expect(last_cmd_stderr.scan("set example metadata :callback to a Proc").size).to eq(1)
+    expect(last_cmd_stdout).to include("12 examples, 0 failures")
     expect(last_cmd_exit_status).to eq(0)
+    stderr = last_cmd_stderr
+
+    run_rspec options
+    serial = last_cmd_stdout.scan(/META .*$/).sort
+    expect(serial.size).to eq(12)
+    expect(serial.first).to eq("META callback0: nil nil true Proc NilClass")
+    expect(serial).to include("META e3: \"shot-3.png\" [\"a\", \"b\"] false NilClass NilClass",
+                              "META lazy0: nil nil true NilClass ParallelSpecLazyThing")
+
+    # A Proc cannot be marshaled; the class is defined only in the worker that ran the example.
+    expect(parallel).to eq(serial.map { |line| line.sub(' Proc ', ' NilClass ').sub(/ ParallelSpecLazyThing$/, ' NilClass') })
+    expect(stderr.scan('set example metadata :callback to a value that cannot reach the formatters (Proc cannot be marshaled)').size).to eq(1)
+    expect(stderr.scan('set example metadata :lazy to a value that cannot reach the formatters (it cannot be loaded here (ArgumentError: undefined class/module ParallelSpecLazyThing').size).to eq(1)
+  ensure
+    Object.send(:remove_const, :ParallelSpecLazyThing) if defined?(ParallelSpecLazyThing)
   end
 
   it 'shows what workers print with the example group that printed it, as a serial run does' do

@@ -243,10 +243,11 @@ module RSpec::Core::Parallel
         seq = sequencer(true)
         seq.group_started(1, g1)
         seq.group_started(2, g2)
-        run_example(seq, 2, ex(g2, "c"))
+        ex(g2, "c").execution_result.status = :passed
+        seq.example_started(2, ex(g2, "c"))
         expect(events.map(&:last)).to eq(%w[G1])
 
-        seq.tick
+        seq.example_finished(2, ex(g2, "c"))
         expect(events.map(&:last)).to eq(%w[G1 G1 G2 c c c])
         expect(seq.stats[:queued]).to eq(0)
 
@@ -260,12 +261,11 @@ module RSpec::Core::Parallel
         seq.group_started(1, g1)
         seq.group_started(2, g2)
         seq.message(2, "big", 600)
-        seq.tick
         expect(events.map(&:last)).to eq(%w[G1])
         expect(seq.stats[:queued_bytes]).to eq(600)
 
+        # As it is queued, not at the next tick: output read in chunks would pile up until then.
         seq.message(2, "bigger", 600)
-        seq.tick
         expect(events.map(&:last)).to eq(%w[G1 G1 G2 big bigger])
         expect(seq.stats).to include(:queued => 0, :queued_bytes => 0, :peak_queued_bytes => 1_200)
       end

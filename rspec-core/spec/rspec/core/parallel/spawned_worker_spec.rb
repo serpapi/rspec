@@ -1,3 +1,5 @@
+require 'fileutils'
+require 'tmpdir'
 require 'tempfile'
 require 'rspec/core/parallel/coordinator'
 
@@ -48,6 +50,20 @@ module RSpec::Core::Parallel
         expect(configuration.inclusion_filter.rules).to eq(:fast => true)
         expect(configuration.parallel_worker_number).to eq(2)
         expect(File.exist?("results.json")).to be false
+      end
+
+      it "opens no file for a formatter its `--require`d files add, which the coordinator writes to" do
+        dir = Dir.mktmpdir
+        helper = File.join(dir, 'helper.rb')
+        File.write(helper, "RSpec.configure { |c| c.add_formatter 'documentation', #{File.join(dir, 'out.txt').inspect} }\n")
+        File.write(File.join(dir, 'out.txt'), "the coordinator's report")
+
+        # The run's configuration, which `RSpec.configure` in the helper configures.
+        SpawnedWorker.configure(['-O', options_file, '--require', helper], { :number => 2, :seed => 1 }, RSpec.configuration)
+
+        expect(File.read(File.join(dir, 'out.txt'))).to eq("the coordinator's report")
+      ensure
+        FileUtils.remove_entry(dir) if dir
       end
 
       it "takes the run's seed without choosing an ordering, which the run's configuration does" do

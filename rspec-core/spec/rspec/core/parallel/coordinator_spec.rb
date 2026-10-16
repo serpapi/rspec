@@ -997,6 +997,22 @@ module RSpec::Core::Parallel
         expect(messages).to include("4 examples, 1 failure")
       end
 
+      it "starts none in place of one that never reported back while loading, which would likely not either" do
+        allow(RSpec::Core::Runner).to receive(:command_line).and_return(["/app/bin/rspec", []])
+        config.parallel_shutdown_timeout = 0.05
+        worker_behaviours[2] = :never_starts
+        # Still running when the other misses its deadline, so that groups wait to run.
+        slow = %w[A B C].map { |name| RSpec.describe(name) { it("passes") { sleep 0.3 } } }
+        instance = started_coordinator(slow)
+        allow(instance).to receive(:spawn_worker) { |handle, handles| spawn(handle, handles) }
+        instance.assign(@units, units_of(@units))
+
+        instance.run
+
+        expect(instance).not_to have_received(:spawn_worker)
+        expect(messages).to include("never reported back")
+      end
+
       it "starts none in place of a lost one when the run was not started by the `rspec` command" do
         allow(RSpec::Core::Runner).to receive(:command_line).and_return(nil)
         instance = started_coordinator(groups)

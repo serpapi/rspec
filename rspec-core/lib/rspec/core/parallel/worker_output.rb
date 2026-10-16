@@ -31,9 +31,12 @@ module RSpec
           $stdout.flush if stream == :err
           # Text-mode output on Windows adds a carriage return to every newline.
           bytes = bytes.gsub("\r\n".b, "\n".b) if RSpec::Support::OS.windows? && !(io.respond_to?(:binmode?) && io.binmode?)
+          # As written, not transcoded: they are in whatever encoding the worker wrote.
+          encoding = io.respond_to?(:external_encoding) && io.external_encoding
+          bytes = bytes.dup.force_encoding(encoding) if encoding
           io.write(bytes)
           io.flush
-        rescue IOError, SystemCallError
+        rescue IOError, SystemCallError, EncodingError
           nil
         end
 

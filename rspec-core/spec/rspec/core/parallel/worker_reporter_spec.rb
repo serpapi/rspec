@@ -10,6 +10,11 @@ module RSpec::Core::Parallel
       results.first.drain.map(&:first)
     end
 
+    # What the reporter dumped itself.
+    def load_dump(dump)
+      Marshal.load(dump) # rubocop:disable Security/MarshalLoad
+    end
+
     after do
       results.each(&:close)
       jobs.each(&:close)
@@ -205,7 +210,10 @@ module RSpec::Core::Parallel
 
       payloads = frames.select { |f| f.first == :example_finished }.to_h { |f| [f.last[:description], f.last[:metadata]] }
       changed, unchanged = payloads.values_at("changes", "changes nothing")
-      expect(changed).to eq(:set => { :added => { :path => "shot.png" }, :tags => %w[a b] }, :deleted => [:gone])
+      expect(changed[:set].map { |key, dump| [key, load_dump(dump)] }).to contain_exactly(
+        [":added", [:added, { :path => "shot.png" }]], [":tags", [:tags, %w[a b]]]
+      )
+      expect(changed[:deleted].map { |key, dump| [key, load_dump(dump)] }).to eq([[":gone", :gone]])
       expect(unchanged).to be_nil
     end
 
@@ -231,7 +239,7 @@ module RSpec::Core::Parallel
       group.run(reporter)
 
       payload = frames.find { |f| f.first == :example_finished }.last
-      expect(payload[:metadata]).to eq(:unsent => { ":callback" => "Proc" })
+      expect(payload[:metadata]).to eq(:unsent => { ":callback" => "Proc cannot be marshaled" })
     end
 
     it "copes with values whose `hash` raises and with deleted keys that cannot be marshaled" do
@@ -259,7 +267,7 @@ module RSpec::Core::Parallel
       RSpec.describe("G") { it("passes") {} }.run(reporter)
 
       payload = frames.find { |f| f.first == :example_finished }.last
-      expect(payload[:metadata]).to eq(:set => { :screenshot => "after.png" })
+      expect(payload[:metadata][:set].map { |key, dump| [key, load_dump(dump)] }).to eq([[":screenshot", [:screenshot, "after.png"]]])
     end
 
     it "sets the world's `wants_to_quit` when the coordinator asks it to quit between examples" do
