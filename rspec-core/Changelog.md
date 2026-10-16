@@ -37,6 +37,11 @@ Enhancements:
   example and example group, which took seconds on a suite of 150,000 examples, and more when
   several processes did it at once. (Illia Zub)
 
+Bug Fixes:
+
+* Fix `--bisect` on Windows, which passed its load path to the processes it starts joined
+  with `:` instead of `;`. (Illia Zub)
+
 # 4.0.0.beta1 / 2026-02-18
 
 Breaking Changes:
