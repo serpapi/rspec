@@ -458,7 +458,7 @@ custom ordering is not split, with a warning. With a formatter that follows
 example groups (documentation, HTML), each part reads as a block of its own,
 under the group's description; `--profile` adds up the parts.
 
-Where Ruby has no `fork` (Windows, JRuby, TruffleRuby), the workers are new
+Where Ruby has no `fork` (Windows, JRuby), the workers are new
 processes running the `rspec` command the run was started with -- the same
 arguments, `.rspec` files and `SPEC_OPTS`, without the formatters, and the
 run's seed -- and each loads the spec files itself, as with

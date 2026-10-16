@@ -55,10 +55,10 @@ module RSpec::Core::Parallel
     end
 
     it "writes what a worker printed as it was written, also to a stream with an encoding of its own" do
-      # A file, which (unlike a StringIO) transcodes what is written to it.
+      # A file, which (unlike a StringIO) transcodes what is written to it; binary, so that Windows adds no CR.
       path = File.join(dir, 'stdout')
       original = $stdout
-      $stdout = File.open(path, 'w:UTF-8')
+      $stdout = File.open(path, 'wb:UTF-8')
       begin
         WorkerOutput.write(:out, "caf\xC3\xA9 \xFF\n".b)
       ensure

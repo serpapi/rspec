@@ -1,7 +1,7 @@
 module RSpec
   module Core
     module Parallel
-      # Where Ruby has no `fork` (Windows, JRuby, TruffleRuby), a worker is a
+      # Where Ruby has no `fork` (Windows, JRuby), a worker is a
       # new process running the `rspec` command the run was started with: it
       # configures itself from the same arguments, `.rspec` files and
       # `SPEC_OPTS` -- without formatters, which are the coordinator's -- and

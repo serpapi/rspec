@@ -103,6 +103,9 @@ module RSpec::Core::Parallel
         expect(worker.process_alive?(Process.pid)).to be true
         gone = Process.spawn(RbConfig.ruby, '-e', 'exit')
         Process.wait(gone)
+        # Windows can still find a pid for a moment after it was reaped.
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+        sleep 0.05 while worker.process_alive?(gone) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
         expect(worker.process_alive?(gone)).to be false
       end
 

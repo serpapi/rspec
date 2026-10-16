@@ -1367,7 +1367,7 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
   end
 end
 
-# Where Ruby has no `fork` (Windows, JRuby, TruffleRuby) the workers are new
+# Where Ruby has no `fork` (Windows, JRuby) the workers are new
 # `rspec` processes; elsewhere a `--require`d file takes `fork` away.
 RSpec.describe 'Parallel execution without fork (spawned workers)', :slow do
   include_context "aruba support"
