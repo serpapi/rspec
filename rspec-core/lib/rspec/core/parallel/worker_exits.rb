@@ -114,6 +114,7 @@ module RSpec
         # nothing, so the group it was given goes to another worker as is.
         def never_started(worker)
           worker.loading = false
+          worker.lost = true
           index = worker.current_unit
           requeue = index && accepting_work?
           report "#{worker.description} never reported back after it was forked (stuck before running any of " \
@@ -142,6 +143,7 @@ module RSpec
         def lost(worker, what, consequence='')
           spoil_exit
           because = "#{consequence}#{worker.exit_cause && ": #{worker.exit_cause}"}"
+          worker.lost = !worker.loading
           if worker.loading
             worker.loading = false
             error("#{worker.description} #{what} while loading the spec files#{consequence}.")

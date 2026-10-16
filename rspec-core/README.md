@@ -398,8 +398,14 @@ again -- whatever it did may be why the worker died; the examples of its group
 it had not started yet run in another worker. One lost in a `before(:context)`
 or `after(:context)` hook fails the examples of that group it had not started,
 as such a hook raising an error would, and the rest of its group runs
-elsewhere. Workers that run out of work wait for the busy ones, so that there
-is a worker to run what a lost one leaves; if none remains, the run says which
+elsewhere. While groups wait to run, a lost worker is replaced by a new one
+with its number and `TEST_ENV_NUMBER` -- not once the run stops early (fail-fast,
+an interrupt, `exit`), not for a worker lost while loading the spec files, and
+no more often than the run has workers; under `--no-parallel-preload` with
+`fork` the new one is a new `rspec` process, as without `fork`, since forking
+the coordinating process after it loaded the spec files is what that setting
+avoids. Workers that run out of work wait for the busy ones, so that there is
+a worker to run what a lost one leaves; if none remains, the run says which
 examples did not run and how to run them. Problems between example groups count
 as errors outside of examples.
 

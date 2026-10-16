@@ -63,6 +63,8 @@ module RSpec
           @last_turn_at = nil
           @output_dir = nil
           @boot_allowance = 0.0
+          @load_themselves = false
+          @replacements = 0
         end
 
         # The groups to run. Workers forked before loading that are more than
@@ -399,6 +401,7 @@ module RSpec
             worker.exit_status = status
             judge_exit(worker, status)
             worker.state = :exited
+            replace(worker)
           end
         end
 
@@ -425,6 +428,7 @@ module RSpec
             drain_output(worker)
             abort_unit(worker)
             worker.state = :abandoned
+            replace(worker)
           end
         end
 

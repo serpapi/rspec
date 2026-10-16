@@ -21,7 +21,8 @@ Enhancements:
   threads, so a stuck `at_exit` handler can no longer hang a run (nor can one that runs
   after code under test called `exit`); neither can a worker stuck in `fork`. A worker
   that crashes fails the example it was running instead of taking the run down, while
-  the examples of its group it had not started run in another worker. Code that calls
+  the examples of its group it had not started run in another worker, and a new worker
+  with its `TEST_ENV_NUMBER` takes its place. Code that calls
   `exit` ends the run with that status, as it does serially. A top-level group tagged
   `:parallel_split => N` runs as N parts in
   different workers. A run stopped with SIGTERM or SIGHUP says which example each worker

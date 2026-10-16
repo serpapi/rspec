@@ -18,10 +18,15 @@ module RSpec
         attr_accessor :starting
         # Its standard output and error, or `nil` when it writes where the run does.
         attr_reader :output
+        # Lost while it ran groups: crashed, killed or terminated.
+        attr_accessor :lost
 
-        def initialize(number, output_dir=nil)
+        # A worker started in place of a lost one has its number and a later
+        # `generation`.
+        def initialize(number, output_dir=nil, generation=1)
           @number = number
-          @output = output_dir && WorkerOutput.new(output_dir, number)
+          @output = output_dir && WorkerOutput.new(output_dir, generation == 1 ? number : "#{number}-#{generation}")
+          @lost = false
           @child_jobs, @jobs = Channel.pipe
           begin
             @results, @child_results = Channel.pipe
