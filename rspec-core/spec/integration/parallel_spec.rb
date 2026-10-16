@@ -8,12 +8,14 @@ module ParallelRunProcess
   def rspec_process(*args)
     cd('.') do
       rspec = [RbConfig.ruby, "-I#{$LOAD_PATH.join(File::PATH_SEPARATOR)}", File.expand_path('../../exe/rspec', __dir__)]
-      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => 'stdout.txt', :err => 'stderr.txt')
+      # Absolute, and in this directory: JRuby keeps its own apart from the process's.
+      out, err = %w[stdout.txt stderr.txt].map { |name| File.expand_path(name) }
+      pid = Process.spawn({ 'TEST_ENV_NUMBER' => nil }, *rspec, *args, :out => out, :err => err, :chdir => Dir.pwd)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
       sleep 0.05 until (status = Process.waitpid2(pid, Process::WNOHANG)&.last) ||
                        Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       Process.kill(:KILL, pid) && Process.wait(pid) unless status
-      [status, File.read('stdout.txt'), File.read('stderr.txt')]
+      [status, File.read(out), File.read(err)]
     end
   end
 end

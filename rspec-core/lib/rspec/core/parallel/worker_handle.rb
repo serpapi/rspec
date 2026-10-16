@@ -112,10 +112,12 @@ module RSpec
           end
         end
 
-        # @return [Integer] the pid of a new process running `command`, its
-        #   jobs on its standard input and its results on its standard output
+        # @return [Integer] the pid of a new process running `command` in
+        #   this process's directory (which JRuby keeps apart from the
+        #   process's own), its jobs on its standard input and its results on
+        #   its standard output
         def spawn_worker(process, command, environment)
-          process.spawn(environment, *command, :in => @child_jobs.io, :out => @child_results.io)
+          process.spawn(environment, *command, :in => @child_jobs.io, :out => @child_results.io, :chdir => Dir.pwd)
         end
 
         def close_parent_ends

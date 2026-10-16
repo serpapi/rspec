@@ -947,7 +947,7 @@ module RSpec::Core::Parallel
       expect(env).to include("RSPEC_PARALLEL_WORKER" => "1", "RSPEC_PARALLEL_COORDINATOR" => Process.pid.to_s,
                              "RSPEC_PARALLEL_SEED" => "99", "TEST_ENV_NUMBER" => "")
       expect(env["RSPEC_PARALLEL_STDOUT"]).to end_with("worker-1.out")
-      expect(redirects).to eq([:in, :out])
+      expect(redirects).to eq([:in, :out, :chdir])
       expect(killed).to eq([4243, 4244])
       expect(instance.instance_variable_get(:@boot_allowance)).to be > 0
     end

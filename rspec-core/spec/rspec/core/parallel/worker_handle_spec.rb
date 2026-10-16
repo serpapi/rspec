@@ -36,7 +36,7 @@ module RSpec::Core::Parallel
         handle = WorkerHandle.new(2)
         process = double(:process)
         expect(process).to receive(:spawn).with({ "A" => "1" }, "ruby", "rspec", :in => handle.child_jobs.io,
-                                                :out => handle.child_results.io).and_return(4242)
+                                                :out => handle.child_results.io, :chdir => Dir.pwd).and_return(4242)
 
         expect(handle.spawn_worker(process, %w[ruby rspec], "A" => "1")).to eq(4242)
         handle.close_all
