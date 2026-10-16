@@ -410,6 +410,24 @@ RSpec.describe 'Parallel execution (--parallel)', :slow, :parallel_split => 4,
     expect(replacement).not_to be_nil
   end
 
+  it 'leaves the file of a formatter that a helper the spec files require adds to the coordinating process' do
+    write_file_formatted 'spec/helper.rb', "RSpec.configure { |c| c.add_formatter 'documentation', 'out.txt' }"
+    4.times do |i|
+      write_file_formatted "spec/f#{i}_spec.rb", "
+        require_relative 'helper'
+        RSpec.describe('F#{i}') { it('runs') { #{i == 1 ? 'Process.kill(:KILL, Process.pid)' : 'sleep 0.5'} } }
+      "
+    end
+
+    # Workers that load the spec files require the helper too; the one started in place of the killed one, mid-run.
+    status, _stdout, _stderr = rspec_process('--parallel=2', '--no-parallel-preload', '--order', 'defined')
+
+    expect(status.exitstatus).to eq(1)
+    report = cd('.') { File.binread('out.txt') }
+    expect(report).not_to include("\0")
+    expect(report).to include("F0", "F2", "F3", "was started in place of the lost worker", "4 examples, 1 failure")
+  end
+
   it 'lets a custom formatter use metadata, exception classes, custom notifications and group boundaries' do
     write_file_formatted 'spec/support/my_formatter.rb', "
       class MyAppError < StandardError; end

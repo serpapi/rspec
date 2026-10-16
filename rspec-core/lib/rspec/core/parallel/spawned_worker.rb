@@ -42,22 +42,10 @@ module RSpec
           configuration.parallel_worker_number = settings[:number]
           configuration.ordering_manager.adopt_seed(settings[:seed]) if settings[:seed]
           # Also for formatters its `--require`d files add.
-          configuration.formatter_loader = FormatterLoader.new(Reporter.new(configuration))
+          configuration.formatter_loader = Worker::FormatterLoader.new(Reporter.new(configuration))
           options = ConfigurationOptions.new(args)
           NOT_FOR_WORKERS.each { |key| options.options.delete(key) }
           options.configure(configuration)
-        end
-
-        # Opens no files: the formatters of a worker never run, and the
-        # coordinating process writes to the files they would.
-        # @private
-        class FormatterLoader < Formatters::Loader
-          private
-
-          # @private
-          def open_stream(_path_or_wrapper)
-            File.open(File::NULL, "w")
-          end
         end
 
         # Never returns.
